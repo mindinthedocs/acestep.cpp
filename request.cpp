@@ -231,7 +231,7 @@ bool request_parse(AceRequest * r, const char * path) {
 
         // ints
         else if (k == "bpm")                r->bpm                = atoi(v.c_str());
-        else if (k == "seed")               r->seed               = atoi(v.c_str());
+        else if (k == "seed")               r->seed               = strtoll(v.c_str(), nullptr, 10);
 
         // floats
         else if (k == "duration")           r->duration           = (float)atof(v.c_str());
@@ -271,7 +271,7 @@ bool request_write(const AceRequest * r, const char * path) {
     fprintf(f, "  \"timesignature\": \"%s\",\n",      json_escape(r->timesignature).c_str());
     fprintf(f, "  \"vocal_language\": \"%s\",\n",     json_escape(r->vocal_language).c_str());
     fprintf(f, "  \"task_type\": \"%s\",\n",          json_escape(r->task_type).c_str());
-    fprintf(f, "  \"seed\": %d,\n",                   r->seed);
+    fprintf(f, "  \"seed\": %lld,\n",                 (long long)r->seed);
     fprintf(f, "  \"thinking\": %s,\n",               r->thinking ? "true" : "false");
     fprintf(f, "  \"lm_temperature\": %.2f,\n",       r->lm_temperature);
     fprintf(f, "  \"lm_cfg_scale\": %.1f,\n",         r->lm_cfg_scale);
@@ -291,8 +291,8 @@ bool request_write(const AceRequest * r, const char * path) {
 }
 
 void request_dump(const AceRequest * r, FILE * f) {
-    fprintf(f, "[Request] task=%s thinking=%s seed=%d\n",
-            r->task_type.c_str(), r->thinking ? "true" : "false", r->seed);
+    fprintf(f, "[Request] task=%s thinking=%s seed=%lld\n",
+            r->task_type.c_str(), r->thinking ? "true" : "false", (long long)r->seed);
     fprintf(f, "  caption:    %.60s%s\n",
             r->caption.c_str(), r->caption.size() > 60 ? "..." : "");
     fprintf(f, "  lyrics:     %zu bytes\n", r->lyrics.size());

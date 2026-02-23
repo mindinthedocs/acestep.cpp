@@ -24,7 +24,7 @@ struct AceRequest {
 
     // generation
     std::string task_type;          // "text2music"
-    int         seed;               // -1 = random
+    int64_t     seed;               // -1 = random
 
     // LM control
     bool        thinking;           // true

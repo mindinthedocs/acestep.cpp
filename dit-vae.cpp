@@ -247,7 +247,7 @@ int main(int argc, char ** argv) {
         const char * timesig  = req.timesignature.empty() ? "N/A" : req.timesignature.c_str();
         const char * language = req.vocal_language.empty() ? "en" : req.vocal_language.c_str();
         float duration        = req.duration > 0 ? req.duration : 120.0f;
-        int seed              = req.seed;
+        long long seed        = req.seed;
         int num_steps         = req.inference_steps > 0 ? req.inference_steps : 8;
         float guidance_scale  = req.guidance_scale > 0 ? req.guidance_scale : 7.0f;
         float shift           = req.shift > 0 ? req.shift : 1.0f;
@@ -260,9 +260,10 @@ int main(int argc, char ** argv) {
 
         if (seed < 0) {
             std::random_device rd;
-            seed = (int)(rd() & 0x7FFFFFFF);
+            seed = (long long)rd() << 32 | rd();
+            if (seed < 0) seed = -seed;
         }
-        fprintf(stderr, "[Pipeline] seed=%d, steps=%d, guidance=%.1f, shift=%.1f, duration=%.1fs\n",
+        fprintf(stderr, "[Pipeline] seed=%lld, steps=%d, guidance=%.1f, shift=%.1f, duration=%.1fs\n",
                 seed, num_steps, guidance_scale, shift, duration);
 
         // Parse audio codes from request
@@ -493,12 +494,12 @@ int main(int argc, char ** argv) {
         } else {
             // Generate N noise samples with seeds: seed, seed+1, ..., seed+N-1
             for (int b = 0; b < batch_n; b++) {
-                std::mt19937 rng(seed + b);
+                std::mt19937 rng((uint32_t)(seed + b));
                 std::normal_distribution<float> normal(0.0f, 1.0f);
                 float * dst = noise.data() + b * Oc * T;
                 for (int i = 0; i < Oc * T; i++)
                     dst[i] = normal(rng);
-                fprintf(stderr, "[Context Batch%d] noise seed=%d\n", b, seed + b);
+                fprintf(stderr, "[Context Batch%d] noise seed=%lld\n", b, seed + b);
             }
         }
 

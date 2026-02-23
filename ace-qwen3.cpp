@@ -730,12 +730,12 @@ static std::string codes_to_string(const std::vector<int> & codes) {
 //               false for partial mode (user provided lyrics).
 static void parse_phase1_into_aces(
         const std::vector<std::string> & texts, const AcePrompt & base,
-        std::vector<AcePrompt> & aces, int base_seed,
+        std::vector<AcePrompt> & aces, long long base_seed,
         const char * label, bool merge_lyrics) {
     int N = (int)texts.size();
     aces.resize(N);
     for (int i = 0; i < N; i++) {
-        fprintf(stderr, "[%s Batch%d] seed=%d:\n%s\n", label, i, base_seed + i, texts[i].c_str());
+        fprintf(stderr, "[%s Batch%d] seed=%lld:\n%s\n", label, i, base_seed + i, texts[i].c_str());
         AcePrompt parsed = {};
         if (!parse_cot_and_lyrics(texts[i], &parsed))
             fprintf(stderr, "WARNING: batch %d CoT parse incomplete\n", i);
@@ -759,7 +759,7 @@ static std::vector<std::string> generate_phase1_batch(
         Qwen3LM * m, BPETokenizer * bpe,
         const std::vector<int> & prompt_tokens,
         int max_new_tokens, float temperature, float top_p, int top_k,
-        int base_seed, int N,
+        long long base_seed, int N,
         MetadataFSM * fsm_template,
         bool lyrics_mode,
         float cfg_scale = 1.0f,
@@ -805,7 +805,7 @@ static std::vector<std::string> generate_phase1_batch(
 
     // Sample first token from shared prefill logits
     for (int i = 0; i < N; i++) {
-        seqs[i].rng.seed(base_seed + i);
+        seqs[i].rng.seed((uint32_t)(base_seed + i));
         if (fsm_template) seqs[i].fsm = *fsm_template;
         seqs[i].codes_phase = false;
         seqs[i].done = false;
@@ -936,7 +936,7 @@ static std::vector<std::string> generate_phase1_batch(
     std::vector<std::string> results(N);
     for (int i = 0; i < N; i++) {
         results[i] = bpe_decode(*bpe, seqs[i].gen_tokens);
-        fprintf(stderr, "[Phase1 Batch%d] seed=%d, %zu tokens\n",
+        fprintf(stderr, "[Phase1 Batch%d] seed=%lld, %zu tokens\n",
                 i, base_seed + i, seqs[i].gen_tokens.size());
     }
     return results;
@@ -949,7 +949,7 @@ static std::vector<std::string> generate_phase1_batch(
 // Returns N code strings. Seeds = base_seed + 0, 1, ..., N-1.
 static std::vector<std::string> run_phase2_batch(
         Qwen3LM * m, BPETokenizer & bpe, const std::vector<AcePrompt> & aces,
-        float temperature, float top_p, int top_k, int base_seed, int N,
+        float temperature, float top_p, int top_k, long long base_seed, int N,
         float cfg_scale, const char * negative_prompt) {
 
     int V = m->cfg.vocab_size;
@@ -970,7 +970,7 @@ static std::vector<std::string> run_phase2_batch(
         int mt = (int)(a.duration * 5) + 100;
         if (mt > max_tokens) max_tokens = mt;
     }
-    fprintf(stderr, "[Phase2] max_tokens: %d, CFG: %.2f, seeds: %d..%d\n",
+    fprintf(stderr, "[Phase2] max_tokens: %d, CFG: %.2f, seeds: %lld..%lld\n",
             max_tokens, cfg_scale, base_seed, base_seed + N - 1);
 
     // Reset all KV sets: cond [0..N-1], uncond [N..2N-1]
@@ -1023,7 +1023,7 @@ static std::vector<std::string> run_phase2_batch(
 
     // Sample first token from per-element prefill logits (N different seeds)
     for (int i = 0; i < N; i++) {
-        seqs[i].rng.seed(base_seed + i);
+        seqs[i].rng.seed((uint32_t)(base_seed + i));
         seqs[i].done = false;
 
         std::vector<float> lg(prefill_logits_vec[i]);  // copy
@@ -1135,7 +1135,7 @@ static std::vector<std::string> run_phase2_batch(
     std::vector<std::string> results(N);
     for (int i = 0; i < N; i++) {
         results[i] = codes_to_string(seqs[i].audio_codes);
-        fprintf(stderr, "[Batch %d] seed=%d, %zu codes\n",
+        fprintf(stderr, "[Batch %d] seed=%lld, %zu codes\n",
                 i, base_seed + i, seqs[i].audio_codes.size());
     }
     return results;
@@ -1226,10 +1226,11 @@ int main(int argc, char ** argv) {
     }
 
     // Resolve seed
-    int seed = req.seed;
+    long long seed = req.seed;
     if (seed < 0) {
         std::random_device rd;
-        seed = (int)(rd() & 0x7FFFFFFF);
+        seed = (int64_t)rd() << 32 | rd();
+        if (seed < 0) seed = -seed;  // keep positive
     }
     req.seed = seed;
 
@@ -1295,7 +1296,7 @@ int main(int argc, char ** argv) {
             fsm.force_language(bpe, ace.vocal_language);
 
         // Phase 1: N lyrics + metadata generations (always batched, N=batch_size)
-        fprintf(stderr, "[Simple] %zu tokens, N=%d, seeds: %d..%d\n",
+        fprintf(stderr, "[Simple] %zu tokens, N=%d, seeds: %lld..%lld\n",
                 prompt.size(), batch_size, seed, seed + batch_size - 1);
 
         auto phase1_texts = generate_phase1_batch(
@@ -1319,7 +1320,7 @@ int main(int argc, char ** argv) {
         if (cfg_scale > 1.0f)
             uncond = build_lm_prompt_uncond(bpe, ace, neg_prompt);
 
-        fprintf(stderr, "[Partial] %zu tokens, CFG: %.2f, N=%d, seeds: %d..%d\n",
+        fprintf(stderr, "[Partial] %zu tokens, CFG: %.2f, N=%d, seeds: %lld..%lld\n",
                 prompt.size(), cfg_scale, batch_size, seed, seed + batch_size - 1);
 
         fsm.reset();
@@ -1402,7 +1403,7 @@ int main(int argc, char ** argv) {
         }
     }
 
-    fprintf(stderr, "[Ace-Qwen3] Load %.0f | Total %.0fms | seed=%d\n",
+    fprintf(stderr, "[Ace-Qwen3] Load %.0f | Total %.0fms | seed=%lld\n",
             load_ms, t_total.ms(), seed);
 
     qw3lm_free(&model);
