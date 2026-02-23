@@ -45,28 +45,31 @@ struct TokenProb {
 };
 
 // Sampling: temperature -> top_k -> top_p -> softmax -> multinomial
-// Matches Python nano-vllm Sampler: div_(temperature) -> apply_top_k_top_p -> softmax -> sample
+// Matches nano-vLLM Sampler: div_(temperature) -> apply_top_k_top_p -> softmax -> sample
 static int sample_top_k_p(float * logits, int V, float temperature, float top_p, int top_k, std::mt19937 & rng) {
     if (temperature <= 0.0f) {
         // greedy
         return (int)(std::max_element(logits, logits + V) - logits);
     }
 
-    // 1. temperature (matches Python: logits.float().div_(temperatures))
+    // 1. temperature (matches nano-vLLM: logits.float().div_(temperatures))
     float inv_temp = 1.0f / temperature;
     for (int i = 0; i < V; i++)
         logits[i] *= inv_temp;
 
     // 2. top_k: keep top K values, set rest to -inf
+    //    nano-vLLM: topk(k) returns k-th largest as threshold, mask < threshold
     if (top_k > 0 && top_k < V) {
         std::vector<float> tmp(logits, logits + V);
-        std::nth_element(tmp.begin(), tmp.begin() + top_k, tmp.end(), std::greater<float>());
-        float threshold = tmp[top_k];
+        std::nth_element(tmp.begin(), tmp.begin() + (top_k - 1), tmp.end(), std::greater<float>());
+        float threshold = tmp[top_k - 1];
         for (int i = 0; i < V; i++)
             if (logits[i] < threshold) logits[i] = -INFINITY;
     }
 
-    // 3. top_p: nucleus filter on temp-scaled logits (matches Python: softmax on scaled logits)
+    // 3. top_p: nucleus filter on temp-scaled logits (matches nano-vLLM: softmax on scaled logits)
+    //    nano-vLLM sorts ascending, cumsum, masks cumsum <= (1-p), keeps last element.
+    //    Equivalent descending: mask tokens where cumsum_before >= top_p (shift-right).
     if (top_p > 0.0f && top_p < 1.0f) {
         std::vector<TokenProb> sorted(V);
         for (int i = 0; i < V; i++) sorted[i] = {i, logits[i]};
@@ -83,12 +86,12 @@ static int sample_top_k_p(float * logits, int V, float temperature, float top_p,
         }
         float inv = 1.0f / sum;
 
-        // cumulative sum, mask where cumprob > top_p (Python shift-right trick)
+        // cumulative sum, test before accumulating (shift-right trick)
         float cum = 0.0f;
         for (int i = 0; i < V; i++) {
-            cum += probs[i] * inv;
-            if (i > 0 && cum > top_p)  // i>0: always keep at least first token
+            if (i > 0 && cum >= top_p)  // i>0: always keep at least first token
                 logits[sorted[i].id] = -INFINITY;
+            cum += probs[i] * inv;
         }
     }
 
