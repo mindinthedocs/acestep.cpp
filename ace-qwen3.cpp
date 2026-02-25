@@ -743,12 +743,13 @@ static void parse_phase1_into_aces(
         if (!parse_cot_and_lyrics(texts[i], &parsed))
             fprintf(stderr, "WARNING: batch %d CoT parse incomplete\n", i);
         aces[i] = base;
-        if (parsed.bpm > 0) aces[i].bpm = parsed.bpm;
-        if (parsed.duration > 0) aces[i].duration = parsed.duration;
-        if (!parsed.keyscale.empty()) aces[i].keyscale = parsed.keyscale;
-        if (!parsed.timesignature.empty()) aces[i].timesignature = parsed.timesignature;
-        if (!parsed.vocal_language.empty()) aces[i].vocal_language = parsed.vocal_language;
-        if (!parsed.caption.empty()) aces[i].caption = parsed.caption;
+        // gap fill: only write fields the user left empty
+        if (parsed.bpm > 0 && base.bpm <= 0) aces[i].bpm = parsed.bpm;
+        if (parsed.duration > 0 && base.duration <= 0) aces[i].duration = parsed.duration;
+        if (!parsed.keyscale.empty() && base.keyscale.empty()) aces[i].keyscale = parsed.keyscale;
+        if (!parsed.timesignature.empty() && base.timesignature.empty()) aces[i].timesignature = parsed.timesignature;
+        if (!parsed.vocal_language.empty() && base.vocal_language.empty()) aces[i].vocal_language = parsed.vocal_language;
+        // lyrics: only generated when user had none
         if (merge_lyrics && !parsed.lyrics.empty()) aces[i].lyrics = parsed.lyrics;
         if (aces[i].duration <= 0) aces[i].duration = 120.0f;
         if (aces[i].duration > 600) aces[i].duration = 600.0f;
@@ -1272,79 +1273,58 @@ int main(int argc, char ** argv) {
     ace.vocal_language = req.vocal_language;
 
     bool user_has_codes = !req.audio_codes.empty();
-    bool need_lm_codes  = req.thinking && !user_has_codes;
-
-    bool is_simple = ace.lyrics.empty() &&
-                     ace.bpm <= 0 && ace.duration <= 0 &&
-                     ace.keyscale.empty() && ace.timesignature.empty();
+    bool need_lyrics    = ace.lyrics.empty();
+    bool has_all_metas  = (ace.bpm > 0 && ace.duration > 0 &&
+                           !ace.keyscale.empty() && !ace.timesignature.empty());
+    bool need_fill      = need_lyrics || !has_all_metas;
 
     std::vector<int> prompt;
-    std::vector<AcePrompt> aces;  // populated by Phase 1 (simple or partial)
+    std::vector<AcePrompt> aces;
 
-    // Preprocessor: simple mode generates lyrics + metas from caption
-    // Skip all LM phases when user provides audio_codes (cover passthrough)
+    // ONE path: fill what's missing, then generate codes.
+    // JSON is the instruction. Empty field = "fill it". Filled = "don't touch".
     if (user_has_codes) {
-        fprintf(stderr, "[Cover] user audio_codes present, skipping LM phases\n");
-    } else if (is_simple) {
-        fprintf(stderr, "[Simple] Inspiration\n");
-
-        const char * sys =
-            "# Instruction\n"
-            "Expand the user's input into a more detailed"
-            " and specific musical description:\n";
-        std::string user_msg = ace.caption + "\n\ninstrumental: "
-            + std::string(req.instrumental ? "true" : "false");
-        prompt = build_custom_prompt(bpe, sys, user_msg.c_str());
-
-        // FSM: reset then optionally force language (shared for both paths)
-        fsm.reset();
-        if (use_fsm && ace.vocal_language != "unknown" && !ace.vocal_language.empty())
-            fsm.force_language(bpe, ace.vocal_language);
-
-        // Phase 1: N lyrics + metadata generations (always batched, N=batch_size)
-        fprintf(stderr, "[Simple] %zu tokens, N=%d, seeds: %lld..%lld\n",
-                prompt.size(), batch_size, seed, seed + batch_size - 1);
-
-        auto phase1_texts = generate_phase1_batch(
-            &model, &bpe, prompt, 2048, temperature, 1.0f, 0,
-            seed, batch_size, use_fsm ? &fsm : nullptr, true);
-
-        parse_phase1_into_aces(phase1_texts, ace, aces, seed, "Simple", true);
-
-        for (int i = 0; i < batch_size; i++) qw3lm_reset_kv(&model, i);
-    }
-
-    // Re-evaluate after possible simple enrichment
-    const AcePrompt & ace_ref = aces.empty() ? ace : aces[0];
-    bool has_all_metas = (ace_ref.bpm > 0 && ace_ref.duration > 0 &&
-                          !ace_ref.keyscale.empty() && !ace_ref.timesignature.empty());
-
-    if (!user_has_codes && !has_all_metas) {
-        // Partial-metas: Phase 1 with CFG to fill missing fields
-        prompt = build_lm_prompt(bpe, ace);
+        fprintf(stderr, "[Pass] audio_codes present, skip LM\n");
+    } else if (need_fill) {
+        if (need_lyrics) {
+            const char * sys =
+                "# Instruction\n"
+                "Expand the user's input into a more detailed"
+                " and specific musical description:\n";
+            std::string user_msg = ace.caption + "\n\ninstrumental: "
+                + std::string(req.instrumental ? "true" : "false");
+            prompt = build_custom_prompt(bpe, sys, user_msg.c_str());
+        } else {
+            prompt = build_lm_prompt(bpe, ace);
+        }
         std::vector<int> uncond;
         if (cfg_scale > 1.0f)
             uncond = build_lm_prompt_uncond(bpe, ace, neg_prompt);
 
-        fprintf(stderr, "[Partial] %zu tokens, CFG: %.2f, N=%d, seeds: %lld..%lld\n",
-                prompt.size(), cfg_scale, batch_size, seed, seed + batch_size - 1);
-
         fsm.reset();
+        if (need_lyrics && use_fsm && ace.vocal_language != "unknown" && !ace.vocal_language.empty())
+            fsm.force_language(bpe, ace.vocal_language);
+
+        fprintf(stderr, "[Fill] lyrics=%s metas=%s | %zu tokens, CFG: %.2f, N=%d\n",
+                need_lyrics ? "generate" : "keep",
+                has_all_metas ? "complete" : "fill gaps",
+                prompt.size(), cfg_scale, batch_size);
+
         auto phase1_texts = generate_phase1_batch(
             &model, &bpe, prompt, 2048, temperature, top_p, top_k,
-            seed, batch_size, use_fsm ? &fsm : nullptr, false,
-            cfg_scale, uncond.empty() ? nullptr : &uncond, true);
+            seed, batch_size, use_fsm ? &fsm : nullptr, need_lyrics,
+            cfg_scale, uncond.empty() ? nullptr : &uncond, !need_lyrics);
 
-        parse_phase1_into_aces(phase1_texts, ace, aces, seed, "Partial", false);
+        parse_phase1_into_aces(phase1_texts, ace, aces, seed, "Fill", need_lyrics);
 
-        for (int i = 0; i < 2 * batch_size; i++) qw3lm_reset_kv(&model, i);
+        int n_kv_reset = (cfg_scale > 1.0f) ? 2 * batch_size : batch_size;
+        for (int i = 0; i < n_kv_reset; i++) qw3lm_reset_kv(&model, i);
     }
 
-    // Guarantee aces is populated (all-metas: single shared ace for prefill optimization)
     if (aces.empty()) aces = {ace};
 
     // Debug: dump tokens/logits
-    if (need_lm_codes && (dump_logits || dump_tokens)) {
+    if (!user_has_codes && (dump_logits || dump_tokens)) {
         std::string cot = build_cot_yaml(aces[0]);
         auto dbg_prompt = build_lm_prompt_with_cot(bpe, aces[0], cot);
 
@@ -1374,14 +1354,13 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // Phase 2: generate audio codes (always batched, N=batch_size)
+    // Phase 2: generate audio codes
     std::vector<std::string> batch_codes(batch_size);
-    if (need_lm_codes) {
+    if (!user_has_codes) {
         batch_codes = run_phase2_batch(&model, bpe, aces,
             temperature, top_p, top_k, seed, batch_size, cfg_scale, neg_prompt);
     } else {
-        fprintf(stderr, "[Skip] %s, no code generation\n",
-                user_has_codes ? "user codes present" : "thinking=false");
+        fprintf(stderr, "[Skip] user audio_codes present, no code generation\n");
     }
 
     // Write N output files: request0.json, request1.json, ...

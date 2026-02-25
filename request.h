@@ -23,11 +23,9 @@ struct AceRequest {
     std::string vocal_language;     // "unknown"
 
     // generation
-    std::string task_type;          // "text2music"
     int64_t     seed;               // -1 = random
 
     // LM control
-    bool        thinking;           // true
     float       lm_temperature;     // 0.85
     float       lm_cfg_scale;       // 2.0
     float       lm_top_p;           // 0.9

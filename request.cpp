@@ -20,9 +20,7 @@ void request_init(AceRequest * r) {
     r->keyscale           = "";
     r->timesignature      = "";
     r->vocal_language     = "unknown";
-    r->task_type          = "text2music";
     r->seed               = -1;
-    r->thinking           = true;
     r->lm_temperature     = 0.85f;
     r->lm_cfg_scale       = 2.0f;
     r->lm_top_p           = 0.9f;
@@ -225,7 +223,6 @@ bool request_parse(AceRequest * r, const char * path) {
         else if (k == "keyscale")           r->keyscale           = v;
         else if (k == "timesignature")      r->timesignature      = v;
         else if (k == "vocal_language")     r->vocal_language     = v;
-        else if (k == "task_type")          r->task_type          = v;
         else if (k == "audio_codes")        r->audio_codes        = v;
         else if (k == "lm_negative_prompt") r->lm_negative_prompt = v;
 
@@ -244,7 +241,6 @@ bool request_parse(AceRequest * r, const char * path) {
         else if (k == "shift")              r->shift              = (float)atof(v.c_str());
 
         // bools
-        else if (k == "thinking")           r->thinking           = (v == "true");
         else if (k == "instrumental")       r->instrumental       = (v == "true");
         // unknown keys: silently ignored (forward compat)
     }
@@ -270,9 +266,7 @@ bool request_write(const AceRequest * r, const char * path) {
     fprintf(f, "  \"keyscale\": \"%s\",\n",           json_escape(r->keyscale).c_str());
     fprintf(f, "  \"timesignature\": \"%s\",\n",      json_escape(r->timesignature).c_str());
     fprintf(f, "  \"vocal_language\": \"%s\",\n",     json_escape(r->vocal_language).c_str());
-    fprintf(f, "  \"task_type\": \"%s\",\n",          json_escape(r->task_type).c_str());
     fprintf(f, "  \"seed\": %lld,\n",                 (long long)r->seed);
-    fprintf(f, "  \"thinking\": %s,\n",               r->thinking ? "true" : "false");
     fprintf(f, "  \"lm_temperature\": %.2f,\n",       r->lm_temperature);
     fprintf(f, "  \"lm_cfg_scale\": %.1f,\n",         r->lm_cfg_scale);
     fprintf(f, "  \"lm_top_p\": %.2f,\n",             r->lm_top_p);
@@ -291,8 +285,7 @@ bool request_write(const AceRequest * r, const char * path) {
 }
 
 void request_dump(const AceRequest * r, FILE * f) {
-    fprintf(f, "[Request] task=%s thinking=%s seed=%lld\n",
-            r->task_type.c_str(), r->thinking ? "true" : "false", (long long)r->seed);
+    fprintf(f, "[Request] seed=%lld\n", (long long)r->seed);
     fprintf(f, "  caption:    %.60s%s\n",
             r->caption.c_str(), r->caption.size() > 60 ? "..." : "");
     fprintf(f, "  lyrics:     %zu bytes\n", r->lyrics.size());
