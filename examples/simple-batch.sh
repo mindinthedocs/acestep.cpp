@@ -6,7 +6,7 @@
 #
 # DiT phase:
 # simple0.json -> simple00.wav, simple01.wav
-#            simple1.json -> simple10.wav, simple11.wav
+# simple1.json -> simple10.wav, simple11.wav
 
 set -eu
 

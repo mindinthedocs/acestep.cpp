@@ -12,6 +12,12 @@ endif()
 # DiT tensor names can exceed default GGML_MAX_NAME of 64
 add_compile_definitions(GGML_MAX_NAME=128)
 
+# CUDA architectures: cover Turing to Blackwell for distributed binaries.
+# Users can override with -DCMAKE_CUDA_ARCHITECTURES=native for local builds.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "75-virtual;80-virtual;86-real;89-real;120a-real;121a-real")
+endif()
+
 # ggml as subdirectory, inherits GGML_CUDA, GGML_METAL, etc. from cmake flags
 add_subdirectory(ggml)
 
