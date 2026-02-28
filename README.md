@@ -343,6 +343,7 @@ Patches on top of upstream GGML, oldest first:
 | `6608cd11` | Vulkan | Fix rvalue ref for `col2im_1d` and `snake` push constants |
 | `06101d38` | Vulkan | Fix double-division dispatch for `col2im_1d` and `snake` |
 | `91416cee` | CPU, CUDA, Metal, Vulkan | `col2im_1d`: fuse padding crop via p0 parameter (saves 5 allocs + 5 memcpy per VAE tile) |
+| `20675b09` | Vulkan | `col2im_1d`, `snake`: 2D dispatch (fixes workgroup overflow on MI50) |
 
 **Why col2im_1d**: upstream `ggml_conv_transpose_1d` uses a naive CUDA kernel (one scalar
 FMA loop per output element, no shared memory, no tensor cores). The VAE spends 40% of its
