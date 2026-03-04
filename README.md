@@ -361,6 +361,39 @@ dit-vae
   WAV stereo 48kHz
 ```
 
+## Roadmap
+
+This project started from a simple idea: a Telegram bot using llama.cpp to
+prompt a music generator, and the desire to make GGML sing. No more, no less.
+No cloud, no black box, scriptable and nothing between you and the model.
+
+### LLM modes
+- [ ] Remaining modes: Understand, Rewrite (single-pass, no audio codes)
+- [ ] Reference audio input: repaint and cover tasks (src_audio + cover_strength)
+
+### Audio I/O
+Current: raw PCM f32 WAV via hand-rolled writer, no external deps.
+Trade-off to document:
+- **Keep as-is**: zero dependencies, clean licensing, works everywhere
+- **ffmpeg pipe**: trivial bash wrapper handles any codec/format, no C++ codec hell
+  - pro: MP3/FLAC/OGG out of the box, input resampling for reference audio
+  - con: runtime dependency, not embedded
+Conclusion pending. Likely ffmpeg as optional external pipe, documented in README.
+
+### API and interface
+- [ ] JSON HTTP server (minimal, well-documented, stable contract)
+- [ ] Web interface on top - vibecodeable by anyone, API stays simple
+Goal: document the internals and how the model actually works,
+not reproduce the Python spaghetti. Expert-first, no commercial fluff.
+
+### Documentation
+Current README is technical study + API reference, intentional.
+- [ ] Split when a user-facing interface exists: README (user) + ARCHITECTURE.md (internals)
+
+### Future models
+- [ ] ACE-Step 2.0: evaluate architecture delta, add headers/weights as needed
+No commitment, easy to adapt by adding headers or new compilation units as needed.
+
 ## LM specifics
 
 ace-qwen3 is not a general-purpose chat engine. It is a two-phase autoregressive
@@ -455,6 +488,19 @@ Upstream `im2col_kernel` uses OW directly as grid dimension Y, which exceeds the
 65535 gridDim limit on long sequences. The VAE calls `ggml_conv_1d` (im2col path) 32
 times per tile at output widths up to 491520. Fixed with a grid-stride loop on OW and
 `MIN(OW, MAX_GRIDDIM_Z)` clamping.
+
+### Upstream divergence
+
+The GGML submodule diverges from upstream only by the addition of
+`GGML_OP_SNAKE` and `GGML_OP_COL2IM_1D`. No existing upstream kernel is
+modified. These ops are required; the VAE does not work without them.
+
+An earlier approach patched the upstream naive ops instead of adding custom
+ones. Those patches were dropped. They are documented here in case someone
+wants to study the naive path:
+
+- `conv_transpose_1d`: bounded loop replacing O(T_in) brute-force, CUDA and Metal
+- `im2col`: grid-stride loop on OW to fix gridDim.y overflow for large tensors
 
 ## Acknowledgements
 
