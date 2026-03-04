@@ -97,13 +97,13 @@ EOF
 # LLM: request.json -> request0.json (enriched with lyrics + codes)
 ./build/ace-qwen3 \
     --request /tmp/request.json \
-    --model models/acestep-5Hz-lm-4B-BF16.gguf
+    --model models/acestep-5Hz-lm-4B-Q8_0.gguf
 
 # DiT+VAE: request0.json -> request00.wav
 ./build/dit-vae \
     --request /tmp/request0.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-BF16.gguf \
-    --dit models/acestep-v15-turbo-BF16.gguf \
+    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf
 ```
 
@@ -114,7 +114,7 @@ Generate multiple songs at once with `--batch`:
 # -> request0.json, request1.json (different lyrics/codes, seeds auto+0, auto+1)
 ./build/ace-qwen3 \
     --request /tmp/request.json \
-    --model models/acestep-5Hz-lm-4B-BF16.gguf \
+    --model models/acestep-5Hz-lm-4B-Q8_0.gguf \
     --batch 2
 
 # DiT+VAE: (2 DiT variations of LM output 1 and 2)
@@ -122,8 +122,8 @@ Generate multiple songs at once with `--batch`:
 # -> request1.json -> request10.wav, request11.wav
 ./build/dit-vae \
     --request /tmp/request0.json /tmp/request1.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-BF16.gguf \
-    --dit models/acestep-v15-turbo-BF16.gguf \
+    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf \
     --batch 2
 ```
@@ -154,19 +154,28 @@ Empty field = "fill it". Filled = "don't touch".
 All modes always output numbered files (`request0.json` .. `requestN-1.json`).
 The input JSON is never modified.
 
-**Caption only**: the LLM generates lyrics, metadata (bpm, key, time
-signature, duration) and audio codes. With `--batch N`, each element
-generates its own lyrics and metadata from a different seed, producing
-N completely different songs. See `examples/simple.json`.
+**Caption only** (`lyrics=""`): two LLM passes. Phase 1 uses the "Expand"
+prompt to generate lyrics and metadata (bpm, keyscale, timesignature,
+duration) via CoT. Phase 2 reinjects the CoT and generates audio codes using
+the "Generate tokens" prompt. CFG is forced to 1.0 in phase 1 (free
+sampling); `lm_cfg_scale` only applies in phase 2. With `--batch N`, each
+element runs its own phase 1 from a different seed, producing N completely
+different songs. See `examples/simple.json`.
 
-**Caption + lyrics (+ optional metadata)**: the LLM fills missing
-metadata via CoT, then generates audio codes. User provided fields
-are preserved. See `examples/partial.json`.
+**Caption + lyrics (+ optional metadata)**: single LLM pass. The "Generate
+tokens" prompt is used directly. Missing metadata is filled via CoT, then
+audio codes are generated. User-provided fields are never overwritten.
+`lm_cfg_scale` applies to both CoT and code generation. See
+`examples/partial.json`.
 
 **Everything provided** (caption, lyrics, bpm, duration, keyscale,
 timesignature): the LLM skips CoT and generates audio codes directly.
 With `--batch N`, all elements share the same prompt (single prefill,
 KV cache copied). See `examples/full.json`.
+
+**Instrumental** (`lyrics="[Instrumental]"`): treated as "lyrics provided",
+so the single-pass "Generate tokens" path is used. No lyrics generation.
+The DiT was trained with this exact string as the no-vocal condition.
 
 **Passthrough** (`audio_codes` present): LLM is skipped entirely.
 Run `dit-vae` to decode existing codes. See `examples/dit-only.json`.
