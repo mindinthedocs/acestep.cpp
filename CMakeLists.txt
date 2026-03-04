@@ -15,7 +15,8 @@ add_compile_definitions(GGML_MAX_NAME=128)
 # CUDA architectures: cover Turing to Blackwell for distributed binaries.
 # Users can override with -DCMAKE_CUDA_ARCHITECTURES=native for local builds.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.8")
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
         set(CMAKE_CUDA_ARCHITECTURES "75-virtual;80-virtual;86-real;89-real;120a-real;121a-real")
     else()
         set(CMAKE_CUDA_ARCHITECTURES "75-virtual;80-virtual;86-real;89-real")
