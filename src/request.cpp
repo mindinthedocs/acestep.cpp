@@ -19,7 +19,7 @@ void request_init(AceRequest * r) {
     r->duration             = 0.0f;
     r->keyscale             = "";
     r->timesignature        = "";
-    r->vocal_language       = "unknown";
+    r->vocal_language       = "";
     r->seed                 = -1;
     r->lm_temperature       = 0.85f;
     r->lm_cfg_scale         = 2.0f;

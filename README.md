@@ -94,7 +94,7 @@ cat > /tmp/request.json << 'EOF'
 }
 EOF
 
-# LLM: request.json -> request0.json (enriched with lyrics + codes)
+# LLM: request.json -> request0.json (enriched with metadata + lyrics + codes)
 ./build/ace-qwen3 \
     --request /tmp/request.json \
     --model models/acestep-5Hz-lm-4B-Q8_0.gguf
@@ -174,18 +174,18 @@ All modes always output numbered files (`request0.json` .. `requestN-1.json`).
 The input JSON is never modified.
 
 **Caption only** (`lyrics=""`): two LLM passes. Phase 1 uses the "Expand"
-prompt to generate lyrics and metadata (bpm, keyscale, timesignature,
-duration) via CoT. Phase 2 reinjects the CoT and generates audio codes using
-the "Generate tokens" prompt. CFG is forced to 1.0 in phase 1 (free
-sampling); `lm_cfg_scale` only applies in phase 2. With `--batch N`, each
-element runs its own phase 1 from a different seed, producing N completely
-different songs. See `examples/simple.json`.
+prompt to generate an enriched caption, lyrics, and metadata (bpm, keyscale,
+timesignature, duration, vocal_language) via CoT. Phase 2 reinjects the CoT
+and generates audio codes using the "Generate tokens" prompt. CFG is forced
+to 1.0 in phase 1 (free sampling); `lm_cfg_scale` only applies in phase 2.
+With `--batch N`, each element runs its own phase 1 from a different seed,
+producing N completely different songs. See `examples/simple.json`.
 
 **Caption + lyrics (+ optional metadata)**: single LLM pass. The "Generate
-tokens" prompt is used directly. Missing metadata is filled via CoT, then
-audio codes are generated. User-provided fields are never overwritten.
-`lm_cfg_scale` applies to both CoT and code generation. See
-`examples/partial.json`.
+tokens" prompt is used directly. Missing metadata is filled via CoT, the
+caption is enriched, and audio codes are generated. User-provided metadata
+fields are never overwritten. `lm_cfg_scale` applies to both CoT and code
+generation. See `examples/partial.json`.
 
 **Everything provided** (caption, lyrics, bpm, duration, keyscale,
 timesignature): the LLM skips CoT and generates audio codes directly.
@@ -250,7 +250,7 @@ the LLM fills them, or a sensible runtime default is applied.
     "duration":             0,
     "keyscale":             "",
     "timesignature":        "",
-    "vocal_language":       "unknown",
+    "vocal_language":       "",
     "seed":                 -1,
     "lm_temperature":       0.85,
     "lm_cfg_scale":         2.0,
@@ -298,10 +298,12 @@ Musical key and scale, e.g. `"C major"`, `"F# minor"`. LLM fills if empty.
 Time signature numerator as a string, e.g. `"4"` for 4/4, `"3"` for 3/4.
 LLM fills if empty.
 
-**`vocal_language`** (string, default `"unknown"`)
-BCP-47 language code for lyrics, e.g. `"en"`, `"fr"`, `"ja"`. When set and
-lyrics are being generated, the FSM constrains the LLM output to that language.
-`"unknown"` lets the LLM decide.
+**`vocal_language`** (string, default `""` = unset)
+BCP-47 language code for lyrics, e.g. `"en"`, `"fr"`, `"ja"`. Three states:
+- `""`: LLM detects the language via CoT and fills this field.
+- `"unknown"`: explicit "no specific language" signal to the DiT.
+- Any language code: used as-is. When lyrics are being generated, the FSM
+  constrains the LLM output to that language.
 
 ### Generation control
 
@@ -523,7 +525,7 @@ prompt a music generator, and the desire to make GGML sing. No more, no less.
 No cloud, no black box, scriptable and nothing between you and the model.
 
 ### ace-qwen3
-- [ ] Remaining modes: Understand, Rewrite (single-pass, no audio codes)
+- [ ] Understand mode: audio codes -> metadata + lyrics (reverse of generation)
 
 ### dit-vae
 - [x] Reference audio input: `--src-audio` + `audio_cover_strength`
