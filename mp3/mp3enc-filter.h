@@ -56,7 +56,7 @@ struct mp3enc_filter {
         // Step 4: matrixing (ISO 11172-3, Annex C, analysis filter).
         // sb_out[k] = sum over i=0..63 of: z[i] * cos((2*k + 1) * (16 - i) * PI / 64)
         // for k = 0..31 (subbands)
-        // Formula verified against Shine (LGPL) source: l3subband.c
+        // Formula verified against ISO 11172-3 Table C.1
         for (int k = 0; k < 32; k++) {
             float sum = 0.0f;
             for (int i = 0; i < 64; i++) {

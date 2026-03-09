@@ -1,7 +1,7 @@
 #pragma once
 // mp3enc.h
-// The first MIT licensed MP3 encoder.
-// MPEG1 Layer III, CBR, 32/44.1/48 kHz, mono/stereo.
+// MPEG1 Layer III MP3 encoder, CBR, 32/44.1/48 kHz, mono/stereo.
+// MIT license.
 //
 // Usage:
 //   mp3enc_t * enc = mp3enc_init(44100, 2, 128);
@@ -50,6 +50,15 @@ struct mp3enc_t {
     float         sb_cur[2][32][18];   // current granule subbands
     mp3enc_psy    psy;                 // psychoacoustic model
 
+    // Bit reservoir (ISO 11172-3, clause 2.4.2.7).
+    // Tracks unused bits from previous frames that can be borrowed.
+    int resv_size;  // current reservoir size in bits
+    int resv_max;   // max: 511 bytes * 8 = 4088 bits
+
+    // Adaptive lowpass: MDCT line index above which coefficients are zeroed.
+    // Saves bits at low bitrates by not encoding inaudible HF content.
+    int lowpass_line;
+
     // PCM input buffer (accumulates until we have 1152 samples)
     float * pcm_buf;   // interleaved buffer: [ch0_1152][ch1_1152]
     int     pcm_fill;  // samples accumulated per channel
@@ -61,6 +70,16 @@ struct mp3enc_t {
 
     // Scratch buffer for one frame (max ~1441 bytes at 320kbps/32kHz)
     uint8_t frame_buf[2048];
+
+    // Main data scratch: written separately from header+sideinfo for reservoir
+    uint8_t md_scratch[2048];
+
+    // Pending frame: we delay output by one frame so we can write the next
+    // frame's main_data overflow into the current frame's unused tail.
+    // This is how the bit reservoir works (ISO 11172-3 clause 2.4.2.7).
+    uint8_t pending_frame[2048];
+    int     pending_bytes;   // size of pending frame (0 = no pending frame)
+    int     pending_md_end;  // byte offset where main_data ends in pending_frame
 
     // Padding state (for 44100 Hz which needs alternating padding)
     int pad_remainder;
@@ -96,6 +115,59 @@ static mp3enc_t * mp3enc_init(int sample_rate, int channels, int bitrate_kbps) {
     }
     memset(enc->sb_prev, 0, sizeof(enc->sb_prev));
     enc->psy.init();
+    enc->psy.init_ath(enc->sr_index, mp3enc_sfb_long[enc->sr_index], sample_rate);
+
+    // Bit reservoir: max 511 bytes (9 bit field main_data_begin)
+    enc->resv_size = 0;
+    enc->resv_max  = 511 * 8;
+
+    // Adaptive lowpass: cut HF that wastes bits at low bitrates.
+    // Cutoff per total bitrate in Hz. Higher bitrates preserve more bandwidth.
+    {
+        static const struct {
+            int kbps;
+            int hz;
+        } lp_table[] = {
+            { 8,   2000  },
+            { 16,  3700  },
+            { 24,  3900  },
+            { 32,  5500  },
+            { 40,  7000  },
+            { 48,  7500  },
+            { 56,  10000 },
+            { 64,  11000 },
+            { 80,  13500 },
+            { 96,  15100 },
+            { 112, 15600 },
+            { 128, 17000 },
+            { 160, 17500 },
+            { 192, 18600 },
+            { 224, 19400 },
+            { 256, 19700 },
+            { 320, 20500 }
+        };
+
+        static const int lp_count = (int) (sizeof(lp_table) / sizeof(lp_table[0]));
+
+        // Find nearest bitrate in table
+        int best      = 0;
+        int best_dist = 999;
+        for (int i = 0; i < lp_count; i++) {
+            int dist = abs(bitrate_kbps - lp_table[i].kbps);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best      = i;
+            }
+        }
+        float cutoff_hz = (float) lp_table[best].hz;
+
+        // MDCT line corresponding to cutoff: 576 lines cover 0..samplerate/2
+        float freq_per_line = (float) sample_rate / (2.0f * 576.0f);
+        enc->lowpass_line   = (int) (cutoff_hz / freq_per_line);
+        if (enc->lowpass_line > 576) {
+            enc->lowpass_line = 576;
+        }
+    }
 
     // Allocate buffers
     enc->pcm_buf  = (float *) calloc(1152 * channels, sizeof(float));
@@ -106,6 +178,10 @@ static mp3enc_t * mp3enc_init(int sample_rate, int channels, int bitrate_kbps) {
     enc->out_written  = 0;
 
     enc->pad_remainder = 0;
+
+    // No pending frame at start
+    enc->pending_bytes  = 0;
+    enc->pending_md_end = 0;
 
     return enc;
 }
@@ -133,7 +209,7 @@ static int mp3enc_get_padding(mp3enc_t * enc) {
 
 // Encode one complete frame (1152 samples per channel).
 // pcm: planar float [ch0: 1152 samples][ch1: 1152 samples]
-// Returns number of bytes written to enc->out_buf.
+// Returns number of bytes written to enc->frame_buf.
 static int mp3enc_encode_frame(mp3enc_t * enc, const float * pcm) {
     int nch     = enc->channels;
     int padding = mp3enc_get_padding(enc);
@@ -156,22 +232,46 @@ static int mp3enc_encode_frame(mp3enc_t * enc, const float * pcm) {
     int main_data_bytes = frame_bytes - 4 - side_info_bytes;
     int main_data_bits  = main_data_bytes * 8;
 
-    // Bits available per granule per channel (rough split)
-    int bits_per_gr_ch = main_data_bits / (2 * nch);
-
     // Get SFB table for this sample rate
     const uint8_t * sfb = mp3enc_sfb_long[enc->sr_index];
 
     // Process 2 granules (each is 576 samples = 18 subband slots of 32 samples)
     mp3enc_side_info si;
     memset(&si, 0, sizeof(si));
-    si.main_data_begin = 0;  // no bit reservoir in phase 1
 
-    int   ix[2][2][576];     // [granule][channel][line]
-    float mdct_lr[2][576];   // MDCT output per channel before M/S transform
+    // Cross-frame bit reservoir (ISO 11172-3 clause 2.4.2.7).
+    // Unused bytes at the end of the previous frame can be borrowed by this frame.
+    // The pending_frame holds the previous frame; its unused tail is the reservoir.
+    int resv_bytes = 0;
+    if (enc->pending_bytes > 0) {
+        resv_bytes = enc->pending_bytes - enc->pending_md_end;
+        if (resv_bytes < 0) {
+            resv_bytes = 0;
+        }
+        if (resv_bytes > 511) {
+            resv_bytes = 511;
+        }
+    }
+    si.main_data_begin = resv_bytes;
+
+    // Total main_data bits: this frame's area + reservoir from previous frame
+    int total_md_bits = main_data_bits + resv_bytes * 8;
+
+    // Mean bits per granule (from total budget)
+    int mean_bits = total_md_bits / 2;
+
+    int   ix[2][2][576];    // [granule][channel][line]
+    float mdct_lr[2][576];  // MDCT output per channel before M/S transform
+
+    int total_bits_used = 0;
+    int intra_resv      = 0;  // intra-frame reservoir: bits saved by granule 0 for granule 1
 
     for (int gr = 0; gr < 2; gr++) {
-        int pcm_offset = gr * 576;  // offset into 1152 sample block
+        int pcm_offset = gr * 576;
+
+        // Block type: long blocks only (block_type=0).
+        // Short blocks (block_type=2) require forward MDCT-12 verification.
+        int block_type = 0;
 
         // Step 1: filterbank + MDCT for all channels
         for (int ch = 0; ch < nch; ch++) {
@@ -186,7 +286,6 @@ static int mp3enc_encode_frame(mp3enc_t * enc, const float * pcm) {
                 }
 
                 // frequency inversion: negate odd subbands at odd time slots
-                // (compensates for the polyphase filterbank's frequency flipping)
                 if (slot & 1) {
                     for (int sb = 1; sb < 32; sb += 2) {
                         enc->sb_cur[ch][sb][slot] = -enc->sb_cur[ch][sb][slot];
@@ -195,75 +294,133 @@ static int mp3enc_encode_frame(mp3enc_t * enc, const float * pcm) {
             }
 
             // MDCT: transform subbands to 576 frequency lines
-            mp3enc_mdct_granule(enc->sb_prev[ch], enc->sb_cur[ch], mdct_lr[ch]);
+            mp3enc_mdct_granule(enc->sb_prev[ch], enc->sb_cur[ch], mdct_lr[ch], block_type);
 
             // Save current subbands as previous for next granule
             memcpy(enc->sb_prev[ch], enc->sb_cur[ch], sizeof(enc->sb_cur[ch]));
         }
 
-        // Step 2: MS stereo transform (after MDCT, before quantization)
-        // M = (L+R)/sqrt(2), S = (L-R)/sqrt(2)
-        // The 1/sqrt(2) compensates for the decoder's gain_exp -2 adjustment
-        // combined with the L=M+S, R=M-S reconstruction.
+        // Step 2: MS stereo transform
         if (nch == 2) {
             static const float ms_scale = 0.7071067811865476f;  // 1/sqrt(2)
             for (int i = 0; i < 576; i++) {
                 float l       = mdct_lr[0][i];
                 float r       = mdct_lr[1][i];
-                mdct_lr[0][i] = (l + r) * ms_scale;  // Mid
-                mdct_lr[1][i] = (l - r) * ms_scale;  // Side
+                mdct_lr[0][i] = (l + r) * ms_scale;
+                mdct_lr[1][i] = (l - r) * ms_scale;
             }
         }
 
-        // Step 3: quantize each channel (now M/S instead of L/R)
-        for (int ch = 0; ch < nch; ch++) {
-            mp3enc_inner_loop(mdct_lr[ch], ix[gr][ch], si.gr[gr][ch], bits_per_gr_ch, sfb, enc->sr_index);
+        // Step 2b: adaptive lowpass (long blocks only).
+        // For short blocks, spectral lines are interleaved so we skip lowpass.
+        if (block_type == 0) {
+            for (int ch = 0; ch < nch; ch++) {
+                for (int i = enc->lowpass_line; i < 576; i++) {
+                    mdct_lr[ch][i] = 0.0f;
+                }
+            }
         }
+
+        // Step 3: bit allocation with combined cross-frame + intra-frame reservoir.
+        // mean_bits includes reservoir from previous frame. intra_resv tracks
+        // savings from granule 0 that granule 1 can use.
+        int max_bits = mean_bits + intra_resv;
+
+        // Don't exceed remaining budget
+        int remaining_bits = total_md_bits - total_bits_used;
+        if (max_bits > remaining_bits) {
+            max_bits = remaining_bits;
+        }
+        if (max_bits > 4095 * nch) {
+            max_bits = 4095 * nch;
+        }
+
+        int bits_per_ch = max_bits / nch;
+
+        // Step 4: quantize each channel
+        int gr_bits_used = 0;
+        for (int ch = 0; ch < nch; ch++) {
+            if (block_type == 2) {
+                // Short blocks: use inner loop only (no scalefactor iteration).
+                // The short MDCT already handles pre-echo by using 3 short windows.
+                // Per-window scalefactors would improve quality further but are
+                // complex to implement (Phase 2d).
+                memset(&si.gr[gr][ch], 0, sizeof(si.gr[gr][ch]));
+                si.gr[gr][ch].block_type = 2;
+                int bits = mp3enc_inner_loop(mdct_lr[ch], ix[gr][ch], si.gr[gr][ch], bits_per_ch, sfb, enc->sr_index);
+                si.gr[gr][ch].part2_3_length = bits;
+                gr_bits_used += bits;
+            } else {
+                // Long blocks: full psy model + outer loop
+                enc->psy.compute(mdct_lr[ch], sfb, enc->sr_index);
+                int bits = mp3enc_outer_loop(mdct_lr[ch], ix[gr][ch], si.gr[gr][ch], enc->psy.xmin, bits_per_ch, sfb,
+                                             enc->sr_index, gr, si.scfsi[ch]);
+                gr_bits_used += bits;
+            }
+        }
+
+        // Track intra-frame savings: bits not used by this granule
+        // become available for the next granule in this frame.
+        intra_resv += mean_bits - gr_bits_used;
+        if (intra_resv < 0) {
+            intra_resv = 0;
+        }
+        total_bits_used += gr_bits_used;
     }
 
-    // Write the frame to the scratch buffer
-    mp3enc_bs bs;
-    bs.init(enc->frame_buf, sizeof(enc->frame_buf));
+    // Write header + side_info to frame_buf
+    mp3enc_bs hdr_bs;
+    hdr_bs.init(enc->frame_buf, sizeof(enc->frame_buf));
+    hdr.write(hdr_bs);
+    si.write(hdr_bs, nch);
+    int hdr_si_bytes = (hdr_bs.total_bits() + 7) / 8;
 
-    // 1. Header (4 bytes = 32 bits)
-    hdr.write(bs);
+    // Write main_data to md_scratch (separate buffer for reservoir assembly)
+    mp3enc_bs md_bs;
+    md_bs.init(enc->md_scratch, sizeof(enc->md_scratch));
 
-    // 2. Side information
-    si.write(bs, nch);
-
-    // 3. Main data (scalefactors + Huffman coded data)
     for (int gr = 0; gr < 2; gr++) {
         for (int ch = 0; ch < nch; ch++) {
             const mp3enc_granule_info & gi = si.gr[gr][ch];
 
-            // Scalefactors (phase 1: slen1=slen2=0, so 0 bits)
-            mp3enc_write_scalefactors(bs, gi, gr, nch, si.scfsi[ch]);
+            // Scalefactors
+            mp3enc_write_scalefactors(md_bs, gi, gr, nch, si.scfsi[ch]);
 
             // Huffman data: big_values region
-            int prev_end = 0;
-            for (int r = 0; r < 3; r++) {
-                // Compute region end from region counts and SFB table
+            int prev_end  = 0;
+            int n_regions = (gi.block_type == 0) ? 3 : 2;
+            for (int r = 0; r < n_regions; r++) {
                 int reg_end;
-                if (r == 0) {
-                    int acc = 0;
-                    for (int s = 0; s <= gi.region0_count; s++) {
-                        acc += sfb[s];
+                if (gi.block_type == 2) {
+                    // Short blocks: 2 regions, split at line 36
+                    if (r == 0) {
+                        reg_end = (36 < gi.big_values * 2) ? 36 : gi.big_values * 2;
+                    } else {
+                        reg_end = gi.big_values * 2;
                     }
-                    reg_end = (acc < gi.big_values * 2) ? acc : gi.big_values * 2;
-                } else if (r == 1) {
-                    int acc = 0;
-                    for (int s = 0; s <= gi.region0_count + gi.region1_count + 1; s++) {
-                        acc += sfb[s];
-                    }
-                    reg_end = (acc < gi.big_values * 2) ? acc : gi.big_values * 2;
                 } else {
-                    reg_end = gi.big_values * 2;
+                    // Long blocks: 3 regions from SFB boundaries
+                    if (r == 0) {
+                        int acc = 0;
+                        for (int s = 0; s <= gi.region0_count; s++) {
+                            acc += sfb[s];
+                        }
+                        reg_end = (acc < gi.big_values * 2) ? acc : gi.big_values * 2;
+                    } else if (r == 1) {
+                        int acc = 0;
+                        for (int s = 0; s <= gi.region0_count + gi.region1_count + 1; s++) {
+                            acc += sfb[s];
+                        }
+                        reg_end = (acc < gi.big_values * 2) ? acc : gi.big_values * 2;
+                    } else {
+                        reg_end = gi.big_values * 2;
+                    }
                 }
 
                 int pairs = (reg_end - prev_end) / 2;
                 for (int p = 0; p < pairs; p++) {
                     int i = prev_end + p * 2;
-                    mp3enc_write_pair(bs, gi.table_select[r], ix[gr][ch][i], ix[gr][ch][i + 1]);
+                    mp3enc_write_pair(md_bs, gi.table_select[r], ix[gr][ch][i], ix[gr][ch][i + 1]);
                 }
                 prev_end = reg_end;
             }
@@ -272,16 +429,60 @@ static int mp3enc_encode_frame(mp3enc_t * enc, const float * pcm) {
             int c1_start = gi.big_values * 2;
             int nz_end   = 576 - mp3enc_count_rzero(ix[gr][ch], 576) * 2;
             int c1_count = (nz_end - c1_start) / 4;
-            mp3enc_write_count1(bs, ix[gr][ch], c1_start, c1_count, gi.count1table_select);
+            mp3enc_write_count1(md_bs, ix[gr][ch], c1_start, c1_count, gi.count1table_select);
         }
     }
+    int md_bytes = (md_bs.total_bits() + 7) / 8;
 
-    // Pad remaining bits with zeros to fill the frame
-    while (bs.total_bits() < frame_bytes * 8) {
-        bs.put(0, 1);
+    // Assemble output: write overflow to pending frame, output it, save current as pending.
+    //
+    // The first resv_bytes of main_data go into the previous frame's unused tail.
+    // The rest goes into the current frame's main data area.
+    // This is how the decoder's main_data_begin backpointer works.
+    int output_bytes = 0;
+
+    if (enc->pending_bytes > 0) {
+        // Write main_data overflow into pending frame's unused tail
+        int overflow = (md_bytes < resv_bytes) ? md_bytes : resv_bytes;
+        if (overflow > 0) {
+            memcpy(enc->pending_frame + enc->pending_md_end, enc->md_scratch, overflow);
+        }
+
+        // Grow out_buf if needed
+        int need = enc->out_written + enc->pending_bytes + frame_bytes;
+        if (need > enc->out_capacity) {
+            enc->out_capacity = need * 2;
+            enc->out_buf      = (uint8_t *) realloc(enc->out_buf, enc->out_capacity);
+        }
+
+        // Output the pending frame (now complete with overflow data)
+        memcpy(enc->out_buf + enc->out_written, enc->pending_frame, enc->pending_bytes);
+        enc->out_written += enc->pending_bytes;
+        output_bytes = enc->pending_bytes;
     }
 
-    return frame_bytes;
+    // Build current frame: header+sideinfo already in frame_buf, add main_data + padding
+    int md_in_frame = md_bytes - resv_bytes;
+    if (md_in_frame < 0) {
+        md_in_frame = 0;
+    }
+    int md_area = frame_bytes - hdr_si_bytes;
+
+    // Copy the portion of main_data that goes in this frame
+    if (md_in_frame > 0) {
+        memcpy(enc->frame_buf + hdr_si_bytes, enc->md_scratch + resv_bytes, md_in_frame);
+    }
+    // Zero-pad the unused tail (this becomes reservoir for the next frame)
+    if (md_in_frame < md_area) {
+        memset(enc->frame_buf + hdr_si_bytes + md_in_frame, 0, md_area - md_in_frame);
+    }
+
+    // Save current frame as pending (will be output when next frame is encoded)
+    memcpy(enc->pending_frame, enc->frame_buf, frame_bytes);
+    enc->pending_bytes  = frame_bytes;
+    enc->pending_md_end = hdr_si_bytes + md_in_frame;
+
+    return output_bytes;
 }
 
 // Public API: encode PCM samples.
@@ -309,20 +510,10 @@ static const uint8_t * mp3enc_encode(mp3enc_t * enc, const float * audio, int n_
         enc->pcm_fill += copy;
         consumed += copy;
 
-        // When we have 1152 samples, encode a frame
+        // When we have 1152 samples, encode a frame.
+        // encode_frame handles writing to out_buf (including pending frame output).
         if (enc->pcm_fill == 1152) {
-            int frame_size = mp3enc_encode_frame(enc, enc->pcm_buf);
-
-            // Grow output buffer if needed
-            int need = enc->out_written + frame_size;
-            if (need > enc->out_capacity) {
-                enc->out_capacity = need * 2;
-                enc->out_buf      = (uint8_t *) realloc(enc->out_buf, enc->out_capacity);
-            }
-
-            // Copy frame from scratch buffer to output
-            memcpy(enc->out_buf + enc->out_written, enc->frame_buf, frame_size);
-            enc->out_written += frame_size;
+            mp3enc_encode_frame(enc, enc->pcm_buf);
             enc->pcm_fill = 0;
         }
     }
@@ -332,29 +523,34 @@ static const uint8_t * mp3enc_encode(mp3enc_t * enc, const float * audio, int n_
 }
 
 // Flush remaining samples (zero pad to 1152, encode last frame).
+// Also outputs the final pending frame from the bit reservoir delay.
 static const uint8_t * mp3enc_flush(mp3enc_t * enc, int * out_size) {
-    *out_size = 0;
-    if (enc->pcm_fill == 0) {
-        return enc->out_buf;
+    *out_size        = 0;
+    enc->out_written = 0;
+
+    if (enc->pcm_fill > 0) {
+        // Zero pad to 1152
+        int nch = enc->channels;
+        for (int ch = 0; ch < nch; ch++) {
+            memset(enc->pcm_buf + ch * 1152 + enc->pcm_fill, 0, (1152 - enc->pcm_fill) * sizeof(float));
+        }
+        enc->pcm_fill = 1152;
+        mp3enc_encode_frame(enc, enc->pcm_buf);
+        enc->pcm_fill = 0;
     }
 
-    // Zero pad to 1152
-    int nch = enc->channels;
-    for (int ch = 0; ch < nch; ch++) {
-        memset(enc->pcm_buf + ch * 1152 + enc->pcm_fill, 0, (1152 - enc->pcm_fill) * sizeof(float));
+    // Output the final pending frame (delayed by one frame for reservoir)
+    if (enc->pending_bytes > 0) {
+        int need = enc->out_written + enc->pending_bytes;
+        if (need > enc->out_capacity) {
+            enc->out_capacity = need * 2;
+            enc->out_buf      = (uint8_t *) realloc(enc->out_buf, enc->out_capacity);
+        }
+        memcpy(enc->out_buf + enc->out_written, enc->pending_frame, enc->pending_bytes);
+        enc->out_written += enc->pending_bytes;
+        enc->pending_bytes = 0;
     }
-    enc->pcm_fill = 1152;
 
-    int frame_size = mp3enc_encode_frame(enc, enc->pcm_buf);
-
-    // Ensure output buffer is large enough
-    if (frame_size > enc->out_capacity) {
-        enc->out_capacity = frame_size * 2;
-        enc->out_buf      = (uint8_t *) realloc(enc->out_buf, enc->out_capacity);
-    }
-    memcpy(enc->out_buf, enc->frame_buf, frame_size);
-
-    enc->pcm_fill = 0;
-    *out_size     = frame_size;
+    *out_size = enc->out_written;
     return enc->out_buf;
 }

@@ -2,22 +2,271 @@
 
 // mp3enc-psy.h
 // Psychoacoustic model for MP3 encoding.
-// Phase 1: flat threshold (no perceptual model, Shine level quality).
-// Phase 2 will add FFT based masking estimation.
-// Part of mp3enc. MIT license.
+// Computes masking thresholds per scalefactor band from MDCT coefficients.
+//
+// Based on ISO 11172-3 Annex D principles:
+//   - Absolute threshold of hearing (ATH)
+//   - Bark-domain asymmetric spreading function (Schroeder)
+//   - Tonal vs noise masking detection (spectral flatness)
+//   - Variable masking offset: tonal -14.5 dB, noise -5.5 dB
+//
+// Constants from ISO 11172-3 Annex D and Zwicker (1961).
+// MIT license.
 
-// Placeholder: no psychoacoustic analysis.
-// The outer iteration loop (Phase 2) will use this to shape quantization noise.
-// For now, we just return "no masking info available" which means
-// the inner loop alone decides bit allocation.
+#include <cmath>
+
+// Number of scalefactor bands for long blocks
+#define MP3ENC_PSY_SFB_MAX 21
+
+// Absolute threshold of hearing in dB SPL.
+// ISO formula: ATH(f) = 3.64*(f/1000)^-0.8 - 6.5*exp(-0.6*(f/1000-3.3)^2) + 1e-3*(f/1000)^4
+// Minimum clamped at -20 dB to avoid numerical issues.
+static inline float mp3enc_ath_db(float freq_hz) {
+    if (freq_hz < 10.0f) {
+        freq_hz = 10.0f;
+    }
+    float fk  = freq_hz * 0.001f;
+    float ath = 3.64f * powf(fk, -0.8f) - 6.5f * expf(-0.6f * (fk - 3.3f) * (fk - 3.3f)) + 0.001f * fk * fk * fk * fk;
+    if (ath < -20.0f) {
+        ath = -20.0f;
+    }
+    return ath;
+}
+
+// Convert frequency in Hz to Bark scale.
+// Traunmuller (1990) approximation, accurate to ~0.05 Bark.
+static inline float mp3enc_hz_to_bark(float f) {
+    if (f < 1.0f) {
+        f = 1.0f;
+    }
+    return 13.0f * atanf(0.00076f * f) + 3.5f * atanf((f / 7500.0f) * (f / 7500.0f));
+}
+
+// Schroeder spreading function in dB.
+// dz = bark distance from masker to maskee (positive = maskee above masker).
+// This models the asymmetric excitation pattern of the basilar membrane:
+// steep below the masker (~27 dB/Bark), shallow above (~10-25 dB/Bark).
+// From Schroeder, Atal, Hall (1979).
+static inline float mp3enc_spreading_db(float dz) {
+    float t = dz + 0.474f;
+    return 15.81f + 7.5f * t - 17.5f * sqrtf(1.0f + t * t);
+}
+
+// Psychoacoustic model state.
 struct mp3enc_psy {
-    // Per granule, per channel masking thresholds (576 frequency lines)
-    // Phase 1: unused. Phase 2: filled by FFT analysis.
-    float threshold[576];
+    // Output: allowed distortion energy per SFB
+    float xmin[MP3ENC_PSY_SFB_MAX];
+
+    // Precomputed per-SFB data (set once per sample rate)
+    float ath_energy[3][MP3ENC_PSY_SFB_MAX];  // [sr_index][sfb]: ATH in linear power
+    float sfb_bark[3][MP3ENC_PSY_SFB_MAX];    // [sr_index][sfb]: center freq in Bark
+    bool  ath_valid;
 
     void init() {
-        for (int i = 0; i < 576; i++) {
-            threshold[i] = 0.0f;  // no masking, let the inner loop handle everything
+        ath_valid = false;
+        for (int i = 0; i < MP3ENC_PSY_SFB_MAX; i++) {
+            xmin[i] = 0.0f;
         }
+    }
+
+    // Precompute ATH energy and Bark positions per SFB.
+    // Must be called once before compute().
+    void init_ath(int sr_index, const uint8_t * sfb_table, int sample_rate) {
+        // MDCT has 576 lines covering 0 to samplerate/2.
+        // Each line represents a frequency bin of width samplerate / (2*576).
+        float freq_per_line = (float) sample_rate / (2.0f * 576.0f);
+
+        int pos = 0;
+        for (int sfb = 0; sfb < MP3ENC_PSY_SFB_MAX; sfb++) {
+            int width = sfb_table[sfb];
+            if (width == 0) {
+                ath_energy[sr_index][sfb] = 1e-20f;
+                sfb_bark[sr_index][sfb]   = 0.0f;
+                continue;
+            }
+
+            // Center frequency of this SFB
+            float center_freq       = ((float) pos + (float) width * 0.5f) * freq_per_line;
+            sfb_bark[sr_index][sfb] = mp3enc_hz_to_bark(center_freq);
+
+            // ATH: minimum of all lines in the band (most permissive)
+            float ath_min_db = 200.0f;
+            for (int j = 0; j < width; j++) {
+                float freq = ((float) (pos + j) + 0.5f) * freq_per_line;
+                float db   = mp3enc_ath_db(freq);
+                if (db < ath_min_db) {
+                    ath_min_db = db;
+                }
+            }
+
+            // Convert dB SPL to linear power, normalized so 96 dB SPL = 1.0
+            // (16 bit full scale). Scale by band width so it's total energy.
+            float ath_linear          = powf(10.0f, (ath_min_db - 96.0f) * 0.1f) * (float) width;
+            ath_energy[sr_index][sfb] = ath_linear;
+
+            pos += width;
+        }
+        ath_valid = true;
+    }
+
+    // Compute masking thresholds for one granule/channel.
+    //
+    // Algorithm:
+    //   1. Compute energy per SFB from MDCT coefficients
+    //   2. Estimate tonality per SFB (spectral flatness measure)
+    //   3. Compute masking offset per SFB based on tonality
+    //   4. Apply Bark-domain spreading function
+    //   5. Combine spread masking with ATH
+    //
+    // mdct: 576 MDCT coefficients (after MS stereo if applicable)
+    // sfb_table: SFB widths for this sample rate
+    // sr_index: sample rate index
+    void compute(const float * mdct, const uint8_t * sfb_table, int sr_index) {
+        float energy[MP3ENC_PSY_SFB_MAX];
+        float tonality[MP3ENC_PSY_SFB_MAX];
+
+        // Step 1: compute energy per SFB
+        int pos = 0;
+        for (int sfb = 0; sfb < MP3ENC_PSY_SFB_MAX; sfb++) {
+            int   width = sfb_table[sfb];
+            float e     = 0.0f;
+            for (int j = 0; j < width; j++) {
+                float x = mdct[pos + j];
+                e += x * x;
+            }
+            energy[sfb] = e;
+            pos += width;
+        }
+
+        // Step 2: estimate tonality per SFB using spectral flatness measure (SFM).
+        // SFM = geometric_mean(power) / arithmetic_mean(power)
+        // SFM = 1.0 for flat noise, SFM -> 0 for a single tone.
+        // We use log domain to avoid overflow: log(geometric_mean) = mean(log(power)).
+        pos = 0;
+        for (int sfb = 0; sfb < MP3ENC_PSY_SFB_MAX; sfb++) {
+            int width = sfb_table[sfb];
+            if (width == 0 || energy[sfb] < 1e-20f) {
+                tonality[sfb] = 0.5f;  // default: assume mixed
+                pos += width;
+                continue;
+            }
+
+            float log_sum  = 0.0f;
+            float arith    = 0.0f;
+            int   n_active = 0;
+            for (int j = 0; j < width; j++) {
+                float p = mdct[pos + j] * mdct[pos + j];
+                if (p > 1e-20f) {
+                    log_sum += logf(p);
+                    n_active++;
+                }
+                arith += p;
+            }
+
+            if (n_active < 2) {
+                // Single line or silence: treat as tonal
+                tonality[sfb] = 0.0f;
+            } else {
+                float geom_log   = log_sum / (float) n_active;
+                float arith_mean = arith / (float) n_active;
+                // SFM in log domain: log(geom/arith) = geom_log - log(arith)
+                float sfm_log    = geom_log - logf(arith_mean);
+                // sfm_log is <= 0. For flat spectrum sfm_log ~ 0, for tonal sfm_log << 0.
+                // Map to tonality index alpha in [0,1]:
+                //   alpha = min(sfm_log / log(0.01), 1.0)
+                // log(0.01) = -4.605; so if sfm_log < -4.6 we consider it fully tonal.
+                float alpha      = sfm_log / -4.605f;
+                if (alpha < 0.0f) {
+                    alpha = 0.0f;
+                }
+                if (alpha > 1.0f) {
+                    alpha = 1.0f;
+                }
+                tonality[sfb] = alpha;  // 0 = noise, 1 = tonal
+            }
+            pos += width;
+        }
+
+        // Step 3: compute masking offset per SFB.
+        // ISO 11172-3: tonal masking noise (TMN) = 14.5 dB, noise masking tone (NMT) = 5.5 dB.
+        // Interpolate by tonality: offset_db = alpha * 14.5 + (1-alpha) * 5.5
+        // Higher offset = more conservative masking (less noise tolerated).
+        float offset_linear[MP3ENC_PSY_SFB_MAX];
+        for (int sfb = 0; sfb < MP3ENC_PSY_SFB_MAX; sfb++) {
+            float alpha        = tonality[sfb];
+            float offset_db    = alpha * 14.5f + (1.0f - alpha) * 5.5f;
+            offset_linear[sfb] = powf(10.0f, -offset_db * 0.1f);
+        }
+
+        // Step 4: Bark-domain spreading function.
+        // For each target SFB, sum the spread contributions from all source SFBs.
+        // The spreading function is asymmetric: steep below, shallow above.
+        float spread_energy[MP3ENC_PSY_SFB_MAX];
+        for (int j = 0; j < MP3ENC_PSY_SFB_MAX; j++) {
+            float sum    = 0.0f;
+            float bark_j = sfb_bark[sr_index][j];
+
+            for (int i = 0; i < MP3ENC_PSY_SFB_MAX; i++) {
+                if (energy[i] < 1e-20f) {
+                    continue;
+                }
+
+                float bark_i = sfb_bark[sr_index][i];
+                float dz     = bark_j - bark_i;
+
+                // Spreading function value in dB
+                float sf_db = mp3enc_spreading_db(dz);
+
+                // Only apply if spreading is above -60 dB (optimization)
+                if (sf_db < -60.0f) {
+                    continue;
+                }
+
+                float sf_linear = powf(10.0f, sf_db * 0.1f);
+                sum += energy[i] * sf_linear;
+            }
+            spread_energy[j] = sum;
+        }
+
+        // Step 5: combine everything into xmin per SFB.
+        // xmin = max(ath, spread_energy * offset)
+        for (int sfb = 0; sfb < MP3ENC_PSY_SFB_MAX; sfb++) {
+            float mask = spread_energy[sfb] * offset_linear[sfb];
+            float ath  = ath_energy[sr_index][sfb];
+
+            xmin[sfb] = (mask > ath) ? mask : ath;
+        }
+    }
+
+    // Detect transients in the PCM for block type switching.
+    // Compares energy in 4 sub-windows of the current granule's PCM.
+    // If any sub-window has significantly more energy than its predecessor,
+    // a transient is present and short blocks should be used.
+    //
+    // pcm: pointer to this granule's 576 PCM samples (one channel)
+    // Returns true if a transient is detected.
+    static bool detect_transient(const float * pcm) {
+        // Split 576 samples into 4 sub-windows of 144 samples
+        float energy[4] = {};
+        for (int w = 0; w < 4; w++) {
+            for (int i = 0; i < 144; i++) {
+                float s = pcm[w * 144 + i];
+                energy[w] += s * s;
+            }
+            // Minimum floor to avoid division by zero
+            if (energy[w] < 1e-12f) {
+                energy[w] = 1e-12f;
+            }
+        }
+
+        // A transient is detected if any sub-window's energy is 10x (10 dB)
+        // greater than the previous sub-window. This threshold is conservative
+        // enough to avoid false positives on gradual changes.
+        for (int w = 1; w < 4; w++) {
+            if (energy[w] > energy[w - 1] * 10.0f) {
+                return true;
+            }
+        }
+        return false;
     }
 };

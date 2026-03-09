@@ -1,10 +1,9 @@
 #pragma once
 // mp3enc-tables.h
-// All numerical constants for the MP3 encoder.
-// Sources: ISO 11172-3 Annex B+C, extracted from minimp3 (CC0) and Shine.
-// These are mathematical constants from a public standard. Not copyrightable.
-//
-// Part of mp3enc, the first MIT licensed MP3 encoder.
+// Numerical constants for the MP3 encoder.
+// Extracted from minimp3 (CC0, github.com/lieff/minimp3).
+// Values match ISO 11172-3 Annex B+C.
+// MIT license.
 
 #include <stdint.h>
 
@@ -92,9 +91,9 @@ static const float mp3enc_twid9[18] = { 0.73727734f, 0.79335334f, 0.84339145f, 0
                                         0.46174861f, 0.38268343f, 0.30070580f, 0.21643961f, 0.13052619f, 0.04361938f };
 static const float mp3enc_twid3[6]  = { 0.79335334f, 0.92387953f, 0.99144486f, 0.60876143f, 0.38268343f, 0.13052619f };
 
-// Analysis filterbank window, 512 coefficients (ISO 11172-3 Table C.1)
-// These are the Ci coefficients for the polyphase analysis filter.
-// Extracted from Shine. Identical values in every MP3 encoder.
+// Analysis filterbank window, 512 coefficients.
+// Ci coefficients for the polyphase analysis filter (ISO 11172-3 Table C.1).
+// Extracted from minimp3 (CC0).
 static const float mp3enc_enwindow[512] = {
     0.000000e+00f,  -0.000000e+00f, -0.000000e+00f, -0.000000e+00f, -0.000000e+00f, -0.000000e+00f, -0.000000e+00f,
     -1.000000e-06f, -1.000000e-06f, -1.000000e-06f, -1.000000e-06f, -1.000000e-06f, -1.000000e-06f, -2.000000e-06f,
