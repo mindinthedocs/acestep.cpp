@@ -537,12 +537,10 @@ int main(int argc, char ** argv) {
             int copy_n = T_cover < S_ref ? T_cover : S_ref;
             memcpy(timbre_feats.data(), cover_latents.data(), (size_t) copy_n * 64 * sizeof(float));
             if (copy_n < S_ref) {
-                memcpy(timbre_feats.data() + (size_t) copy_n * 64,
-                       silence_full.data() + (size_t) copy_n * 64,
+                memcpy(timbre_feats.data() + (size_t) copy_n * 64, silence_full.data() + (size_t) copy_n * 64,
                        (size_t) (S_ref - copy_n) * 64 * sizeof(float));
             }
-            fprintf(stderr, "[Timbre] Using source latents (%d frames, %.1fs)\n",
-                    copy_n, (float) copy_n / 25.0f);
+            fprintf(stderr, "[Timbre] Using source latents (%d frames, %.1fs)\n", copy_n, (float) copy_n / 25.0f);
         } else {
             memcpy(timbre_feats.data(), silence_full.data(), S_ref * 64 * sizeof(float));
         }
