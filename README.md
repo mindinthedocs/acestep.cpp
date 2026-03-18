@@ -59,10 +59,10 @@ If you want to convert from the original safetensors yourself:
 
 ```bash
 pip install gguf hf
-./checkpoints.sh          # download raw HF checkpoints (turbo + 4B LM)
-./checkpoints.sh --all    # all variants (SFT, shift1/3, 0.6B/1.7B LM)
-python3 convert.py        # convert all checkpoints to GGUF (models/)
-./quantize.sh             # quantize BF16 -> Q4_K_M/Q5_K_M/Q6_K/Q8_0
+./checkpoints.sh       # download raw HF checkpoints (turbo + 4B LM)
+./checkpoints.sh --all # all variants (SFT, shift1/3, 0.6B/1.7B LM)
+python3 convert.py     # convert all checkpoints to GGUF (models/)
+./quantize.sh          # quantize BF16 -> Q4_K_M/Q5_K_M/Q6_K/Q8_0
 ```
 
 `checkpoints.sh` downloads safetensors, config.json, and tokenizer files
@@ -90,12 +90,12 @@ EOF
 # LLM: request.json -> request0.json (enriched with metadata + lyrics + codes)
 ./build/ace-lm \
     --request /tmp/request.json \
-    --model models/acestep-5Hz-lm-4B-Q8_0.gguf
+    --lm models/acestep-5Hz-lm-4B-Q8_0.gguf
 
 # DiT+VAE: request0.json -> request00.mp3
 ./build/ace-synth \
     --request /tmp/request0.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf
 ```
@@ -106,7 +106,7 @@ With a LoRA adapter (PEFT directory or ComfyUI single file):
 # PEFT directory (contains adapter_model.safetensors + adapter_config.json)
 ./build/ace-synth \
     --request /tmp/request0.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf \
     --lora /path/to/lora-adapter
@@ -114,7 +114,7 @@ With a LoRA adapter (PEFT directory or ComfyUI single file):
 # ComfyUI single .safetensors file (alpha baked in, no config needed)
 ./build/ace-synth \
     --request /tmp/request0.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf \
     --lora best_sft_v2_2338_comfyui.safetensors
@@ -135,12 +135,12 @@ EOF
 # LM: request.json (batch_size=2) -> request0.json, request1.json (each batch_size=1)
 ./build/ace-lm \
     --request /tmp/request.json \
-    --model models/acestep-5Hz-lm-4B-Q8_0.gguf
+    --lm models/acestep-5Hz-lm-4B-Q8_0.gguf
 
 # DiT+VAE: -> request00.mp3, request10.mp3 (one per request, batch_size=1)
 ./build/ace-synth \
     --request /tmp/request0.json /tmp/request1.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf
 ```
@@ -166,7 +166,7 @@ EOF
 ./build/ace-synth \
     --src-audio song.wav \
     --request /tmp/cover.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-turbo-Q8_0.gguf \
     --vae models/vae-BF16.gguf \
 ```
@@ -175,12 +175,15 @@ Ready-made examples in `examples/`:
 
 ```bash
 cd examples
-./simple.sh           # caption only, LLM fills everything
-./partial.sh          # caption + lyrics + duration
-./full.sh             # all metadata provided
-./dit-only.sh         # skip LLM, DiT from noise
-./server.sh           # start HTTP server (LM + synth, batch=2)
-./client.sh           # test server (2 variations via /lm + /synth)
+./simple.sh                    # caption only, LLM fills everything
+./simple-batch.sh              # 2x2: 2 LM variations x 2 DiT variations = 4 MP3s
+./partial.sh                   # caption + lyrics + duration
+./full.sh                      # all metadata provided
+./dit-only.sh                  # skip LLM, DiT from noise
+./server.sh                    # start HTTP server (all pipelines, batch=2)
+./client.sh                    # test server (single song)
+./client-batch.py              # test server (2x2 = 4 MP3s)
+./client-understand.sh <audio> # test /understand + /synth roundtrip
 ```
 
 Each example has a `-sft` variant (SFT model, 50 steps, CFG 1.0)
@@ -253,7 +256,7 @@ EOF
 ./build/ace-synth \
     --src-audio song.wav \
     --request /tmp/repaint.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-sft-Q8_0.gguf \
     --vae models/vae-BF16.gguf
 ```
@@ -278,7 +281,7 @@ EOF
 ./build/ace-synth \
     --src-audio backing-track.wav \
     --request /tmp/lego.json \
-    --text-encoder models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+    --embedding models/Qwen3-Embedding-0.6B-Q8_0.gguf \
     --dit models/acestep-v15-base-Q8_0.gguf \
     --vae models/vae-BF16.gguf \
     --wav
@@ -314,9 +317,9 @@ the LLM fills them, or a sensible runtime default is applied.
     "guidance_scale":       0.0,
     "shift":                0.0,
     "audio_cover_strength": 0.5,
-    "repainting_start":    -1,
-    "repainting_end":      -1,
-    "lego":                ""
+    "repainting_start":     -1,
+    "repainting_end":       -1,
+    "lego":                 ""
 }
 ```
 
@@ -452,11 +455,11 @@ Base/SFT preset: `inference_steps=50, guidance_scale=1.0, shift=1.0`.
 ## ace-lm reference
 
 ```
-Usage: ace-lm --request <json> --model <gguf> [options]
+Usage: ace-lm --request <json> --lm <gguf> [options]
 
 Required:
   --request <json>       Input request JSON
-  --model <gguf>         Model GGUF file
+  --lm <gguf>            5Hz LM GGUF file
 
 Debug:
   --max-seq <N>          KV cache size (default: 8192)
@@ -476,11 +479,11 @@ Model weights are read once per decode step for all N sequences. Phase 1
 ## ace-synth reference
 
 ```
-Usage: ace-synth --request <json...> --text-encoder <gguf> --dit <gguf> --vae <gguf> [options]
+Usage: ace-synth --request <json...> --embedding <gguf> --dit <gguf> --vae <gguf> [options]
 
 Required:
   --request <json...>     One or more request JSONs (from ace-lm --request)
-  --text-encoder <gguf>   Text encoder GGUF file
+  --embedding <gguf>      Embedding GGUF file
   --dit <gguf>            DiT GGUF file
   --vae <gguf>            VAE GGUF file
 
@@ -523,77 +526,115 @@ source (default 0.5).
 
 ## ace-server reference
 
-HTTP server exposing the same pipelines as `ace-lm` and `ace-synth` over
-two POST endpoints. Models are loaded once at startup. One binary, one port.
+HTTP server exposing the same pipelines as `ace-lm`, `ace-synth`, and
+`ace-understand` over three POST endpoints. Models are loaded once at
+startup. One binary, one port.
+
+At least `--lm` or the synth trio (`--embedding --dit --vae`) is required.
+
+| Pipeline | Args | Enables | VRAM (approx) |
+|:---------|:-----|:--------|:--------------|
+| LM | `--lm` | /lm, /understand | ~7 GB (batch=1) |
+| Synth | `--embedding --dit --vae` | /synth | ~12 GB |
+
+When both are loaded, all three endpoints are active and /synth runs
+concurrently with /lm (disjoint GPU memory, separate mutexes).
+Endpoints whose pipeline is not loaded return 501.
 
 ```
 Usage: ace-server [options]
 
-LM model (optional, enables POST /lm):
-  --lm-model <gguf>         LM GGUF file
-  --lm-max-seq <N>          KV cache size (default: 8192)
+LM (enables /lm + /understand):
+  --lm <gguf>             Qwen3 LM GGUF file
+  --max-seq <N>           KV cache size (default: 8192)
 
-Synth models (enables POST /synth):
-  --text-encoder <gguf>     Text encoder GGUF file
-  --dit <gguf>              DiT GGUF file
-  --vae <gguf>              VAE GGUF file
+Synth (enables /synth, all three required):
+  --embedding <gguf>      Text encoder GGUF file
+  --dit <gguf>            DiT GGUF file
+  --vae <gguf>            VAE GGUF file
 
 LoRA:
-  --lora <path>             LoRA safetensors file or directory
-  --lora-scale <float>      LoRA scaling factor (default: 1.0)
+  --lora <path>           LoRA safetensors file or directory
+  --lora-scale <float>    LoRA scaling factor (default: 1.0)
 
 VAE tiling (memory control):
-  --vae-chunk <N>           Latent frames per tile (default: 256)
-  --vae-overlap <N>         Overlap frames per side (default: 64)
+  --vae-chunk <N>         Latent frames per tile (default: 256)
+  --vae-overlap <N>       Overlap frames per side (default: 64)
 
 Output:
-  --mp3-bitrate <kbps>      MP3 bitrate (default: 128)
+  --mp3-bitrate <kbps>    MP3 bitrate (default: 128)
 
 Server:
-  --host <addr>             Listen address (default: 127.0.0.1)
-  --port <N>                Listen port (default: 8080)
-  --max-batch <N>           LM batch pre-alloc (default: 1)
-  --max-queue <N>           Global queue depth (default: 4)
-  --parallelize             Allow LM + synth concurrently
+  --host <addr>           Listen address (default: 127.0.0.1)
+  --port <N>              Listen port (default: 8080)
+  --max-batch <N>         LM/synth batch limit (default: 1)
+  --max-queue <N>         Global queue depth (default: 4)
 
 Debug:
-  --no-fsm                  Disable FSM constrained decoding
-  --no-fa                   Disable flash attention
+  --no-fsm                Disable FSM constrained decoding
+  --no-fa                 Disable flash attention
 ```
 
-At least one pipeline must be loaded. Both can be loaded in the same
-process if the GPU has enough VRAM for all models.
+Examples:
+
+```bash
+# full mode (~19 GB VRAM)
+ace-server --lm lm.gguf --embedding emb.gguf --dit dit.gguf --vae vae.gguf
+
+# synth only (~12 GB, /lm and /understand return 501)
+ace-server --embedding emb.gguf --dit dit.gguf --vae vae.gguf
+
+# LM only (~7 GB, /synth returns 501, /understand codes-only)
+ace-server --lm lm.gguf
+```
 
 ### Endpoints
 
 **POST /lm** accepts an AceRequest JSON body, runs the LM pipeline, and
 returns a JSON array of enriched requests (`Content-Type: application/json`).
 `batch_size` in the input controls the array length (clamped to `1..max_batch`).
-Returns 501 if no LM model is loaded.
+Requires `--lm`.
 
-**POST /synth** accepts an AceRequest JSON body (typically one element
-from the `/lm` output array), runs the synth pipeline, and returns raw
-MP3 bytes (`Content-Type: audio/mpeg`). Always generates one track per
-request. Response headers: `X-Seed`, `X-Duration`, `X-Compute-Ms`.
-Returns 501 if no synth models are loaded.
+**POST /synth** runs the synth pipeline and returns MP3 audio.
+Two input modes: plain `application/json` body for text2music, or
+`multipart/form-data` with a `request` part (JSON) and an `audio` part
+(WAV or MP3) for cover/repaint/lego. `batch_size` in the JSON controls
+GPU batching (clamped to `1..max_batch`).
+Response format depends on batch size:
+`batch_size=1`: `Content-Type: audio/mpeg` with headers `X-Seed`, `X-Duration`, `X-Compute-Ms`.
+`batch_size>1`: `Content-Type: multipart/mixed`, each part is `audio/mpeg` with per-part
+`X-Seed` (base_seed+b), `X-Duration`, `X-Compute-Ms` headers.
+Requires `--embedding --dit --vae`.
+
+**POST /understand** runs the reverse pipeline (audio -> metadata + lyrics + codes)
+and returns an AceRequest JSON. Two input modes: `multipart/form-data` with an
+`audio` part (required) and optional `request` part (sampling params), or plain
+`application/json` with `audio_codes` for codes-only mode (skip VAE + FSQ).
+Audio input mode requires `--lm` plus `--dit --vae`. Codes-only mode
+requires just `--lm`.
 
 **GET /health** returns server status:
-`{"status":"ok","lm_loaded":bool,"synth_loaded":bool,"queue":N,"max_queue":N,"parallelize":bool}`
+`{"status":"ok","queue":N,"max_queue":N,"max_batch":N,"pipelines":["lm","synth","understand"]}`
+
+The `pipelines` array lists the active endpoints based on which models
+were loaded. Endpoints not in the list return 501.
 
 Error responses are JSON: `{"error":"message"}` with 400, 500, 501, or
 503 status. 503 includes `Retry-After` header and queue counts.
 
 ### Concurrency
 
-By default, LM and synth share a single mutex (serial mode). Only one
-pipeline runs at a time. Use `--parallelize` to give each pipeline its own
-mutex, allowing LM and synth to run concurrently on GPUs with enough VRAM.
+When both LM and synth are loaded, /synth gets its own mutex and runs
+concurrently with /lm on the GPU (disjoint models, disjoint memory).
+/lm and /understand always share a mutex because they use the same
+Qwen3 KV cache. When only one group is loaded, everything is serial.
 
 A global queue tracks total requests in flight (waiting + running). When
 full, the server returns 503 with a `Retry-After` header and queue status
 in the JSON body. Clients can poll `/health` to monitor queue depth.
 
-Request bodies are limited to 100 KB (a typical request is under 10 KB).
+Request bodies are limited to 120 MB (enough for a 10-minute WAV upload
+via multipart).
 
 ## neural-codec reference
 
@@ -691,7 +732,7 @@ Two input modes: `--src-audio` runs the full chain (VAE encode + FSQ tokenize +
 LM), `--request` with an `audio_codes` field skips straight to the LM.
 
 ```
-Usage: ace-understand [--src-audio <file> --dit <gguf> --vae <gguf> | --request <json>] --model <gguf>
+Usage: ace-understand [--src-audio <file> --dit <gguf> --vae <gguf> | --request <json>] --lm <gguf>
 
 Audio input (full pipeline):
   --src-audio <file>      Source audio (WAV or MP3, any sample rate)
@@ -702,13 +743,14 @@ Code input (skip VAE + tokenizer):
   --request <json>        Request JSON with audio_codes field
 
 Required:
-  --model <gguf>          5Hz LM GGUF (same model as ace-lm)
+  --lm <gguf>             5Hz LM GGUF file
 
 Output:
   -o <json>               Output JSON (default: stdout summary)
 
 Sampling params (seed, lm_temperature, lm_top_p, lm_top_k) come from the
-request JSON. Without --request, understand defaults apply (temperature=0.3).
+request JSON. Without --request, understand defaults apply
+(temperature=0.3, top_p disabled).
 
 VAE tiling:
   --vae-chunk <N>         Latent frames per tile (default: 256)
@@ -805,9 +847,9 @@ ACE-Step-1.5 repo cloned alongside acestep.cpp (`../ACE-Step-1.5`).
 
 ```bash
 cd tests
-python3 debug-lm-logits.py        # Qwen3 LM: first-token logits GGML vs PyTorch (0.6B/1.7B/4B)
-python3 debug-detok-cossim.py     # FSQ detokenizer: step-by-step cossim C++ vs Python
-python3 debug-dit-cossim.py       # DiT: per-layer cossim GGML vs Python (turbo/SFT, BF16/quantized)
+python3 debug-lm-logits.py    # Qwen3 LM: first-token logits GGML vs PyTorch (0.6B/1.7B/4B)
+python3 debug-detok-cossim.py # FSQ detokenizer: step-by-step cossim C++ vs Python
+python3 debug-dit-cossim.py   # DiT: per-layer cossim GGML vs Python (turbo/SFT, BF16/quantized)
 ```
 
 ## Patched GGML fork

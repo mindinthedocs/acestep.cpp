@@ -570,14 +570,14 @@ static bool load_bpe_from_gguf(BPETokenizer * tok, const char * gguf_path) {
     struct gguf_init_params gp  = { true, NULL };
     struct gguf_context *   ctx = gguf_init_from_file(gguf_path, gp);
     if (!ctx) {
-        fprintf(stderr, "[BPE] failed to open %s\n", gguf_path);
+        fprintf(stderr, "[BPE] Failed to open %s\n", gguf_path);
         return false;
     }
 
     int64_t tok_key = gguf_find_key(ctx, "tokenizer.ggml.tokens");
     int64_t mrg_key = gguf_find_key(ctx, "tokenizer.ggml.merges");
     if (tok_key < 0 || mrg_key < 0) {
-        fprintf(stderr, "[BPE] tokenizer not found in %s\n", gguf_path);
+        fprintf(stderr, "[BPE] Tokenizer not found in %s\n", gguf_path);
         gguf_free(ctx);
         return false;
     }

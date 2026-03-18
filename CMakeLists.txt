@@ -80,6 +80,7 @@ add_library(acestep-core STATIC
     src/request.cpp
     src/pipeline-lm.cpp
     src/pipeline-synth.cpp
+    src/pipeline-understand.cpp
 )
 link_ggml_backends(acestep-core)
 

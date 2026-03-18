@@ -78,7 +78,7 @@ static bool gf_load(GGUFModel * gf, const char * path) {
 #ifdef _WIN32
     gf->fh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (gf->fh == INVALID_HANDLE_VALUE) {
-        fprintf(stderr, "[GGUF] cannot open %s\n", path);
+        fprintf(stderr, "[GGUF] Cannot open %s\n", path);
         return false;
     }
     LARGE_INTEGER li;
@@ -100,7 +100,7 @@ static bool gf_load(GGUFModel * gf, const char * path) {
 #else
     gf->fd = open(path, O_RDONLY);
     if (gf->fd < 0) {
-        fprintf(stderr, "[GGUF] cannot open %s\n", path);
+        fprintf(stderr, "[GGUF] Cannot open %s\n", path);
         return false;
     }
     struct stat sb;
@@ -110,7 +110,7 @@ static bool gf_load(GGUFModel * gf, const char * path) {
     if (gf->mapping == MAP_FAILED) {
         close(gf->fd);
         gf->mapping = NULL;
-        fprintf(stderr, "[GGUF] mmap failed %s\n", path);
+        fprintf(stderr, "[GGUF] Mmap failed %s\n", path);
         return false;
     }
 #endif
@@ -120,7 +120,7 @@ static bool gf_load(GGUFModel * gf, const char * path) {
     struct gguf_init_params params = { /*no_alloc=*/true, /*ctx=*/&meta };
     gf->gguf                       = gguf_init_from_file(path, params);
     if (!gf->gguf) {
-        fprintf(stderr, "[GGUF] failed to parse %s\n", path);
+        fprintf(stderr, "[GGUF] Failed to parse %s\n", path);
         gf_close(gf);
         return false;
     }

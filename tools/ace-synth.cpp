@@ -13,10 +13,10 @@
 
 static void usage(const char * prog) {
     fprintf(stderr,
-            "Usage: %s --request <json...> --text-encoder <gguf> --dit <gguf> --vae <gguf> [options]\n\n"
+            "Usage: %s --request <json...> --embedding <gguf> --dit <gguf> --vae <gguf> [options]\n\n"
             "Required:\n"
             "  --request <json...>     One or more request JSONs (from ace-lm --request)\n"
-            "  --text-encoder <gguf>   Text encoder GGUF file\n"
+            "  --embedding <gguf>      Embedding GGUF file\n"
             "  --dit <gguf>            DiT GGUF file\n"
             "  --vae <gguf>            VAE GGUF file\n\n"
             "Reference audio:\n"
@@ -63,7 +63,7 @@ int main(int argc, char ** argv) {
             while (i + 1 < argc && argv[i + 1][0] != '-') {
                 request_paths.push_back(argv[++i]);
             }
-        } else if (!strcmp(argv[i], "--text-encoder") && i + 1 < argc) {
+        } else if (!strcmp(argv[i], "--embedding") && i + 1 < argc) {
             text_enc_gguf = argv[++i];
         } else if (!strcmp(argv[i], "--dit") && i + 1 < argc) {
             dit_gguf = argv[++i];
@@ -108,7 +108,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     if (!text_enc_gguf) {
-        fprintf(stderr, "[CLI] ERROR: --text-encoder required\n");
+        fprintf(stderr, "[CLI] ERROR: --embedding required\n");
         usage(argv[0]);
         return 1;
     }

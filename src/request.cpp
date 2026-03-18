@@ -341,7 +341,7 @@ bool request_parse(AceRequest * r, const char * path) {
         return false;
     }
 
-    fprintf(stderr, "[Request] parsed %s\n", path);
+    fprintf(stderr, "[Request] Parsed %s\n", path);
     return true;
 }
 
@@ -382,7 +382,7 @@ bool request_write(const AceRequest * r, const char * path) {
     fprintf(f, "}\n");
 
     fclose(f);
-    fprintf(stderr, "[Request] wrote %s\n", path);
+    fprintf(stderr, "[Request] Wrote %s\n", path);
     return true;
 }
 

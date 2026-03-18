@@ -12,11 +12,11 @@
 
 static void usage(const char * prog) {
     fprintf(stderr,
-            "Usage: %s --request <json> --model <gguf> [options]\n"
+            "Usage: %s --request <json> --lm <gguf> [options]\n"
             "\n"
             "Required:\n"
             "  --request <json>       Input request JSON\n"
-            "  --model <gguf>         Model GGUF file\n"
+            "  --lm <gguf>            5Hz LM GGUF file\n"
             "\n"
             "Debug:\n"
             "  --max-seq <N>          KV cache size (default: 8192)\n"
@@ -41,7 +41,7 @@ int main(int argc, char ** argv) {
     }
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--model") && i + 1 < argc) {
+        if (!strcmp(argv[i], "--lm") && i + 1 < argc) {
             params.model_path = argv[++i];
         } else if (!strcmp(argv[i], "--request") && i + 1 < argc) {
             request_path = argv[++i];
@@ -66,7 +66,7 @@ int main(int argc, char ** argv) {
     }
 
     if (!params.model_path) {
-        fprintf(stderr, "[CLI] ERROR: --model required\n");
+        fprintf(stderr, "[CLI] ERROR: --lm required\n");
         usage(argv[0]);
         return 1;
     }

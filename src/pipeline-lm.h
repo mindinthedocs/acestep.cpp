@@ -38,3 +38,10 @@ int ace_lm_generate(AceLm *            ctx,
                     void * cancel_data     = nullptr);
 
 void ace_lm_free(AceLm * ctx);
+
+// Accessors for sharing the internal LM with other pipelines (e.g. understand).
+// Pointers are valid for the lifetime of the AceLm context.
+struct Qwen3LM;
+struct BPETokenizer;
+Qwen3LM *      ace_lm_get_model(AceLm * ctx);
+BPETokenizer * ace_lm_get_bpe(AceLm * ctx);

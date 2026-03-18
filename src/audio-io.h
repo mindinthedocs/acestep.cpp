@@ -72,7 +72,7 @@ static float * audio_io_read_mp3(const char * path, int * T_out, int * sr_out) {
 
     FILE * fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "[Audio] cannot open %s\n", path);
+        fprintf(stderr, "[Audio] Cannot open %s\n", path);
         return NULL;
     }
     fseek(fp, 0, SEEK_END);
@@ -125,7 +125,7 @@ static float * audio_io_read_mp3(const char * path, int * T_out, int * sr_out) {
     free(mp3_buf);
 
     if (pcm_count == 0 || out_sr == 0) {
-        fprintf(stderr, "[Audio] no audio decoded from %s\n", path);
+        fprintf(stderr, "[Audio] No audio decoded from %s\n", path);
         free(pcm_buf);
         return NULL;
     }
@@ -150,7 +150,7 @@ static float * audio_io_read_mp3(const char * path, int * T_out, int * sr_out) {
     *T_out  = T;
     *sr_out = out_sr;
 
-    fprintf(stderr, "[MP3] read %s: %d samples, %d Hz, %d ch\n", path, T, out_sr, out_nch);
+    fprintf(stderr, "[MP3] Read %s: %d samples, %d Hz, %d ch\n", path, T, out_sr, out_nch);
     return planar;
 }
 
@@ -209,17 +209,17 @@ static float * audio_read_48k(const char * path, int * T_out) {
     }
 
     int T_rs = 0;
-    fprintf(stderr, "[Audio-resample] %d Hz -> 48000 Hz, %d samples...\n", sr, T);
+    fprintf(stderr, "[Audio-Resample] %d Hz -> 48000 Hz, %d samples...\n", sr, T);
     float * resampled = audio_resample(raw, T, sr, 48000, 2, &T_rs);
     free(raw);
 
     if (!resampled) {
-        fprintf(stderr, "[Audio-resample] resample failed\n");
+        fprintf(stderr, "[Audio-Resample] Resample failed\n");
         *T_out = 0;
         return NULL;
     }
 
-    fprintf(stderr, "[Audio-resample] Done: %d -> %d samples\n", T, T_rs);
+    fprintf(stderr, "[Audio-Resample] Done: %d -> %d samples\n", T, T_rs);
 
     *T_out = T_rs;
     return resampled;
@@ -230,7 +230,7 @@ static float * audio_read_48k(const char * path, int * T_out) {
 static bool audio_write_wav(const char * path, const float * audio, int T_audio, int sr) {
     FILE * f = fopen(path, "wb");
     if (!f) {
-        fprintf(stderr, "[Audio] cannot open %s for writing\n", path);
+        fprintf(stderr, "[Audio] Cannot open %s for writing\n", path);
         return false;
     }
 
@@ -276,7 +276,7 @@ static bool audio_write_wav(const char * path, const float * audio, int T_audio,
     free(pcm);
 
     fclose(f);
-    fprintf(stderr, "[WAV] wrote %s: %d samples, %d Hz, stereo\n", path, T_audio, sr);
+    fprintf(stderr, "[WAV] Wrote %s: %d samples, %d Hz, stereo\n", path, T_audio, sr);
     return true;
 }
 
@@ -302,10 +302,10 @@ static std::string audio_encode_mp3(const float * audio,
         int T_rs  = 0;
         resampled = audio_resample(audio, T_audio, sr, 44100, 2, &T_rs);
         if (!resampled) {
-            fprintf(stderr, "[Audio-resample] resample failed\n");
+            fprintf(stderr, "[Audio-Resample] Resample failed\n");
             return "";
         }
-        fprintf(stderr, "[Audio-resample] %d Hz -> 44100 Hz (%d -> %d samples)\n", sr, T_audio, T_rs);
+        fprintf(stderr, "[Audio-Resample] %d Hz -> 44100 Hz (%d -> %d samples)\n", sr, T_audio, T_rs);
         enc_audio = resampled;
         enc_T     = T_rs;
         enc_sr    = 44100;
@@ -322,7 +322,7 @@ static std::string audio_encode_mp3(const float * audio,
     float       duration = (float) enc_T / (float) enc_sr;
     out.reserve((size_t) ((float) kbps * 128.0f * duration));  // rough: kbps*1000/8*dur
 
-    fprintf(stderr, "[MP3] encoding %.1fs @ %d kbps, %d Hz stereo\n", duration, kbps, enc_sr);
+    fprintf(stderr, "[MP3] Encoding %.1fs @ %d kbps, %d Hz stereo\n", duration, kbps, enc_sr);
     clock_t t_start = clock();
 
     // encode in 1-second chunks
@@ -371,13 +371,13 @@ static bool audio_write_mp3(const char * path, const float * audio, int T_audio,
 
     FILE * fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "[Audio] cannot open %s for writing\n", path);
+        fprintf(stderr, "[Audio] Cannot open %s for writing\n", path);
         return false;
     }
     fwrite(mp3.data(), 1, mp3.size(), fp);
     fclose(fp);
 
-    fprintf(stderr, "[MP3] wrote %s\n", path);
+    fprintf(stderr, "[MP3] Wrote %s\n", path);
     return true;
 }
 

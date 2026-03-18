@@ -230,7 +230,7 @@ static bool st_open(STFile * st, const char * path) {
 #ifdef _WIN32
     st->fh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (st->fh == INVALID_HANDLE_VALUE) {
-        fprintf(stderr, "[Safetensors] cannot open %s\n", path);
+        fprintf(stderr, "[Safetensors] Cannot open %s\n", path);
         return false;
     }
     LARGE_INTEGER li;
@@ -250,7 +250,7 @@ static bool st_open(STFile * st, const char * path) {
 #else
     st->fd = open(path, O_RDONLY);
     if (st->fd < 0) {
-        fprintf(stderr, "[Safetensors] cannot open %s\n", path);
+        fprintf(stderr, "[Safetensors] Cannot open %s\n", path);
         return false;
     }
     struct stat sb;
@@ -260,14 +260,14 @@ static bool st_open(STFile * st, const char * path) {
     if (st->mapping == MAP_FAILED) {
         close(st->fd);
         st->mapping = NULL;
-        fprintf(stderr, "[Safetensors] mmap failed %s\n", path);
+        fprintf(stderr, "[Safetensors] Mmap failed %s\n", path);
         return false;
     }
 #endif
 
     // first 8 bytes: LE u64 header length
     if (st->file_size < 8) {
-        fprintf(stderr, "[Safetensors] file too small %s\n", path);
+        fprintf(stderr, "[Safetensors] File too small %s\n", path);
         st_close(st);
         return false;
     }
@@ -276,14 +276,14 @@ static bool st_open(STFile * st, const char * path) {
     st->data_offset = 8 + (size_t) hdr_len;
 
     if (st->data_offset > st->file_size) {
-        fprintf(stderr, "[Safetensors] header overflows file %s\n", path);
+        fprintf(stderr, "[Safetensors] Header overflows file %s\n", path);
         st_close(st);
         return false;
     }
 
     // parse JSON header
     if (!st_parse(st, (const char *) st->mapping + 8, (size_t) hdr_len)) {
-        fprintf(stderr, "[Safetensors] failed to parse header %s\n", path);
+        fprintf(stderr, "[Safetensors] Failed to parse header %s\n", path);
         st_close(st);
         return false;
     }

@@ -37,7 +37,7 @@ static void debug_dump(const DebugDumper * d, const char * name, const float * d
 
     FILE * f = fopen(path, "wb");
     if (!f) {
-        fprintf(stderr, "[Debug] cannot write %s\n", path);
+        fprintf(stderr, "[Debug] Cannot write %s\n", path);
         return;
     }
 
@@ -73,7 +73,7 @@ static void debug_dump_1d(const DebugDumper * d, const char * name, const float 
 static std::vector<float> debug_load(const char * path, std::vector<int> & shape) {
     FILE * f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "[Debug] cannot read %s\n", path);
+        fprintf(stderr, "[Debug] Cannot read %s\n", path);
         return {};
     }
 

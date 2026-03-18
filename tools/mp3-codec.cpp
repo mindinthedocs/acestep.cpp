@@ -65,13 +65,13 @@ int main(int argc, char ** argv) {
         } else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
             bitrate = atoi(argv[++i]);
         } else {
-            fprintf(stderr, "[mp3-codec] unknown option: %s\n", argv[i]);
+            fprintf(stderr, "[MP3-Codec] Unknown option: %s\n", argv[i]);
             return 1;
         }
     }
 
     if (!input || !output) {
-        fprintf(stderr, "[mp3-codec] both -i and -o are required\n");
+        fprintf(stderr, "[MP3-Codec] Both -i and -o are required\n");
         return 1;
     }
 
@@ -89,7 +89,7 @@ int main(int argc, char ** argv) {
     } else if (ends_with(output, ".wav")) {
         ok = audio_write_wav(output, audio, T, sr);
     } else {
-        fprintf(stderr, "[mp3-codec] cannot determine format from output extension\n");
+        fprintf(stderr, "[MP3-Codec] Cannot determine format from output extension\n");
         fprintf(stderr, "  use .mp3 for encoding, .wav for decoding\n");
         free(audio);
         return 1;

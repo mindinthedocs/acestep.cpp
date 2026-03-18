@@ -471,7 +471,7 @@ static int dit_ggml_generate(DiTGGML *           model,
             }
         }
 
-        fprintf(stderr, "[DiT] step %d/%d t=%.3f\n", step + 1, num_steps, t_curr);
+        fprintf(stderr, "[DiT] Step %d/%d t=%.3f\n", step + 1, num_steps, t_curr);
     }
 
     // Batch diagnostic: report per-sample stats to catch corruption

@@ -429,7 +429,7 @@ int ace_synth_generate(AceSynth *         ctx,
         }
         if (re > rs) {
             is_repaint = true;
-            fprintf(stderr, "[Repaint] region: %.1fs - %.1fs (src=%.1fs)\n", rs, re, src_dur);
+            fprintf(stderr, "[Repaint] Region: %.1fs - %.1fs (src=%.1fs)\n", rs, re, src_dur);
         } else {
             fprintf(stderr, "[Repaint] ERROR: repainting_end (%.1f) <= repainting_start (%.1f)\n", re, rs);
             return -1;
@@ -555,7 +555,7 @@ int ace_synth_generate(AceSynth *         ctx,
         if (repaint_t0 > T) {
             repaint_t0 = T;
         }
-        fprintf(stderr, "[Repaint] latent frames: [%d, %d) / %d\n", repaint_t0, repaint_t1, T);
+        fprintf(stderr, "[Repaint] Latent frames: [%d, %d) / %d\n", repaint_t0, repaint_t1, T);
     }
     std::vector<float> context_single(T * ctx_ch);
     if (have_cover) {

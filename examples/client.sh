@@ -1,19 +1,15 @@
 #!/bin/bash
-# Test ace-server: LM enriches 2 variations, synth renders each to MP3
-# Start the server first (./server.sh), then run this
+# Test ace-server: LM enriches caption, synth renders to MP3.
+# Start the server first (./server.sh), then run this.
 
 set -eu
 
 curl -sf http://127.0.0.1:8085/lm \
-     -H "Content-Type: application/json" \
-     -d @simple-batch.json \
-     -o server-lm-out.json
+    -H "Content-Type: application/json" \
+    -d @simple.json \
+| jq '.[0]' > server-lm0.json
 
-N=$(jq length server-lm-out.json)
-for i in $(seq 0 $((N - 1))); do
-    jq ".[$i]" server-lm-out.json \
-    | curl -sf http://127.0.0.1:8085/synth \
-        -H "Content-Type: application/json" \
-        -d @- \
-        -o "server${i}.mp3"
-done
+curl -sf http://127.0.0.1:8085/synth \
+    -H "Content-Type: application/json" \
+    -d @server-lm0.json \
+    -o server0.mp3
