@@ -1,13 +1,13 @@
 @echo off
 
 chcp 65001
-set PATH=%~dp0..\build-msvc\bin\Release;%PATH%
+set PATH=%~dp0..\build\Release;%PATH%
 
-..\build-msvc\Release\ace-lm.exe ^
+ace-lm.exe ^
     --request simple.json ^
     --lm ..\models\acestep-5Hz-lm-4B-Q6_K.gguf
 
-..\build-msvc\Release\ace-synth.exe ^
+ace-synth.exe ^
     --request simple0.json ^
     --embedding ..\models\Qwen3-Embedding-0.6B-Q8_0.gguf ^
     --dit ..\models\acestep-v15-turbo-Q6_K.gguf ^

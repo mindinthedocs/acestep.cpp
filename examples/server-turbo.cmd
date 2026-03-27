@@ -1,9 +1,9 @@
 @echo off
 
 chcp 65001
-set PATH=%~dp0..\build-msvc\bin\Release;%PATH%
+set PATH=%~dp0..\build\Release;%PATH%
 
-..\build-msvc\Release\ace-server.exe ^
+ace-server.exe ^
     --host 0.0.0.0 ^
     --port 8085 ^
     --lm ..\models\acestep-5Hz-lm-4B-Q8_0.gguf ^
