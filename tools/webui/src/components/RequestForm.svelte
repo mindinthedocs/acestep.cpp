@@ -311,25 +311,25 @@
 		<button type="button" onclick={reset} title="Reset"><RotateCcw size={14} /> Reset</button>
 	</div>
 
-	<label
+	<label class="section-label"
 		>Name
 		<input type="text" bind:value={app.name} placeholder="Untitled" />
 	</label>
 
-	<label
+	<label class="section-label"
 		>Caption
 		<textarea
 			rows="8"
-			placeholder="Upbeat pop rock with driving guitars"
+			placeholder="Upbeat pop rock with driving guitars... (the only required field, may be enriched by the LM)"
 			bind:value={app.request.caption}
 		></textarea>
 	</label>
 
-	<label
+	<label class="section-label"
 		>Lyrics
 		<textarea
 			rows="8"
-			placeholder="[Instrumental] or write lyrics..."
+			placeholder="Write your own lyrics, type [Instrumental], or leave empty to let the LM create them..."
 			bind:value={app.request.lyrics}
 		></textarea>
 	</label>
@@ -548,6 +548,10 @@
 		font-size: 0.85rem;
 		color: var(--fg-dim);
 	}
+	.section-label {
+		color: var(--fg);
+		font-weight: 600;
+	}
 	textarea,
 	input[type='text'] {
 		font-family: inherit;
@@ -572,7 +576,8 @@
 	details summary {
 		cursor: pointer;
 		font-size: 0.85rem;
-		color: var(--fg-dim);
+		color: var(--fg);
+		font-weight: 600;
 		padding: 0.4rem 0;
 	}
 	details summary:hover {
