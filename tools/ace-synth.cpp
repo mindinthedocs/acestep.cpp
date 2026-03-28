@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -155,12 +154,7 @@ int main(int argc, char ** argv) {
         }
         fprintf(stderr, "[Cover] Source audio: %.2fs @ 48kHz\n", (float) T_audio / 48000.0f);
 
-        // VAE expects interleaved [L0,R0,L1,R1,...], convert from planar
-        src_interleaved = (float *) malloc((size_t) T_audio * 2 * sizeof(float));
-        for (int t = 0; t < T_audio; t++) {
-            src_interleaved[t * 2 + 0] = planar[t];
-            src_interleaved[t * 2 + 1] = planar[T_audio + t];
-        }
+        src_interleaved = audio_planar_to_interleaved(planar, T_audio);
         free(planar);
         src_len = T_audio;
     }
@@ -208,11 +202,8 @@ int main(int argc, char ** argv) {
         }
 
         // resolve seed once per original request
+        request_resolve_seed(&reqs[ri]);
         long long base_seed = reqs[ri].seed;
-        if (base_seed < 0) {
-            std::random_device rd;
-            base_seed = (long long) rd();
-        }
 
         // build group: N copies with consecutive seeds
         std::vector<AceRequest> group(sbs);

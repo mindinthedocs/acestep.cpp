@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -316,4 +317,11 @@ void request_dump(const AceRequest * r, FILE * f) {
         fprintf(f, "[Request] lego: %s\n", r->lego.c_str());
     }
     fprintf(f, "[Request] audio_codes: %s\n", r->audio_codes.empty() ? "(none)" : "(present)");
+}
+
+void request_resolve_seed(AceRequest * r) {
+    if (r->seed < 0) {
+        std::random_device rd;
+        r->seed = (int64_t) rd();
+    }
 }

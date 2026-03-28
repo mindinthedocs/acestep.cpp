@@ -390,12 +390,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
-        // VAE expects interleaved [L0,R0,L1,R1,...], convert from planar
-        float * audio = (float *) malloc((size_t) T_audio * 2 * sizeof(float));
-        for (int t = 0; t < T_audio; t++) {
-            audio[t * 2 + 0] = planar[t];
-            audio[t * 2 + 1] = planar[T_audio + t];
-        }
+        float * audio = audio_planar_to_interleaved(planar, T_audio);
         free(planar);
 
         VAEEncoder enc = {};
@@ -447,7 +442,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
-        if (audio_write_wav(output_path, audio.data(), T_audio, 48000)) {
+        if (audio_write(output_path, audio.data(), T_audio, 48000, 0)) {
             fprintf(stderr, "\n[VAE] Output: %s (%d samples, %.2fs @ 48kHz)\n", output_path, T_audio,
                     (float) T_audio / 48000.0f);
         } else {

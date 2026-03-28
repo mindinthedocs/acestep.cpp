@@ -290,6 +290,35 @@ static float * audio_read_48k(const char * path, int * T_out) {
     return resampled;
 }
 
+// peak normalize stereo audio to 0 dBFS in-place.
+// n_total = number of float samples (both channels, so T_audio * 2 for stereo).
+static void audio_normalize(float * audio, int n_total) {
+    float peak = 0.0f;
+    for (int i = 0; i < n_total; i++) {
+        float a = audio[i] < 0.0f ? -audio[i] : audio[i];
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    if (peak > 1e-8f && peak != 1.0f) {
+        float gain = 1.0f / peak;
+        for (int i = 0; i < n_total; i++) {
+            audio[i] *= gain;
+        }
+    }
+}
+
+// convert planar [L:T][R:T] to interleaved [L0,R0,L1,R1,...].
+// returns malloc'd buffer of 2*T floats. caller must free().
+static float * audio_planar_to_interleaved(const float * planar, int T) {
+    float * out = (float *) malloc((size_t) T * 2 * sizeof(float));
+    for (int t = 0; t < T; t++) {
+        out[t * 2 + 0] = planar[t];
+        out[t * 2 + 1] = planar[T + t];
+    }
+    return out;
+}
+
 // audio_encode_wav is the core: encode planar stereo to WAV 16-bit PCM in memory.
 // 44-byte RIFF header + interleaved int16 samples.
 // audio is planar [L0..LN, R0..RN], pre-normalized by caller.
@@ -587,21 +616,7 @@ static bool audio_write_mp3(const char * path, const float * audio, int T_audio,
 // .wav (or anything else) -> WAV 16-bit PCM.
 // Peak-normalizes to 0 dBFS in-place before writing (single normalization point).
 static bool audio_write(const char * path, float * audio, int T_audio, int sr, int kbps) {
-    // 0 dBFS peak normalization: scale so max |sample| = 1.0
-    int   n_total = T_audio * 2;
-    float peak    = 0.0f;
-    for (int i = 0; i < n_total; i++) {
-        float a = audio[i] < 0.0f ? -audio[i] : audio[i];
-        if (a > peak) {
-            peak = a;
-        }
-    }
-    if (peak > 1e-8f && peak != 1.0f) {
-        float gain = 1.0f / peak;
-        for (int i = 0; i < n_total; i++) {
-            audio[i] *= gain;
-        }
-    }
+    audio_normalize(audio, T_audio * 2);
 
     if (audio_io_ends_with(path, ".mp3")) {
         return audio_write_mp3(path, audio, T_audio, sr, (kbps > 0) ? kbps : 128);

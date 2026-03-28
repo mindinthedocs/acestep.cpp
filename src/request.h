@@ -83,3 +83,6 @@ bool request_parse_json_array(const char * json, std::vector<AceRequest> * out);
 
 // Dump human-readable summary to stream (debug)
 void request_dump(const AceRequest * r, FILE * f);
+
+// Resolve seed: if negative, replace with a hardware random value.
+void request_resolve_seed(AceRequest * r);

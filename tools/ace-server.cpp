@@ -44,7 +44,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -496,11 +495,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
                 return;
             }
             fprintf(stderr, "[Server] Source audio: %.2fs @ 48kHz\n", (float) T_audio / 48000.0f);
-            src_interleaved = (float *) malloc((size_t) T_audio * 2 * sizeof(float));
-            for (int t = 0; t < T_audio; t++) {
-                src_interleaved[t * 2 + 0] = planar[t];
-                src_interleaved[t * 2 + 1] = planar[T_audio + t];
-            }
+            src_interleaved = audio_planar_to_interleaved(planar, T_audio);
             free(planar);
             src_len = T_audio;
         }
@@ -560,11 +555,8 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         }
 
         // resolve seed once per original request
+        request_resolve_seed(&r);
         long long base_seed = r.seed;
-        if (base_seed < 0) {
-            std::random_device rd;
-            base_seed = (long long) rd();
-        }
 
         // build group: N copies of the same request with consecutive seeds
         std::vector<AceRequest> group(sbs);
@@ -611,21 +603,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
             continue;
         }
 
-        // peak normalize to 0 dBFS
-        int   n_total = audio[b].n_samples * 2;
-        float peak    = 0.0f;
-        for (int i = 0; i < n_total; i++) {
-            float a = audio[b].samples[i] < 0.0f ? -audio[b].samples[i] : audio[b].samples[i];
-            if (a > peak) {
-                peak = a;
-            }
-        }
-        if (peak > 1e-8f && peak != 1.0f) {
-            float gain = 1.0f / peak;
-            for (int i = 0; i < n_total; i++) {
-                audio[b].samples[i] *= gain;
-            }
-        }
+        audio_normalize(audio[b].samples, audio[b].n_samples * 2);
 
         if (output_wav) {
             encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000);
@@ -720,11 +698,7 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
         fprintf(stderr, "[Server] Understand source: %.2fs @ 48kHz\n", (float) T_audio / 48000.0f);
 
         // convert planar [L:T][R:T] to interleaved [L0,R0,L1,R1,...] for pipeline
-        src_interleaved = (float *) malloc((size_t) T_audio * 2 * sizeof(float));
-        for (int t = 0; t < T_audio; t++) {
-            src_interleaved[t * 2 + 0] = planar[t];
-            src_interleaved[t * 2 + 1] = planar[T_audio + t];
-        }
+        src_interleaved = audio_planar_to_interleaved(planar, T_audio);
         free(planar);
         src_len = T_audio;
     } else {
