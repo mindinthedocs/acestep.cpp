@@ -147,6 +147,19 @@ reference, all task types (text2music, cover, repaint, lego, extract, complete),
 FSM constrained decoding, custom GGML operators, quantization, and architecture
 internals.
 
+## Community
+
+### ACE-Step official documentation
+
+- [A Musician's Guide](https://github.com/ace-step/ACE-Step-1.5/discussions/235) - non-technical guide for music makers
+- [Tutorial](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md) - design philosophy, model architecture, input control, inference hyperparameters
+
+### Third-party UIs for acestep.cpp
+
+- [acestep-cpp-ui](https://github.com/audiohacking/acestep-cpp-ui)
+- [acestep.cpp-simple-GUI](https://github.com/Nurb4000/acestep.cpp-simple-GUI)
+- [aceradio](https://github.com/IMbackK/aceradio)
+
 ## Samples
 
 https://github.com/user-attachments/assets/9a50c1f4-9ec0-474a-bd14-e8c6b00622a1
