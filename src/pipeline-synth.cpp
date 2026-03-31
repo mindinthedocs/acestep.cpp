@@ -297,7 +297,7 @@ int ace_synth_generate(AceSynth *         ctx,
     float re         = rr.repainting_end;
 
     // use_source_context: true when the task requires source latents in DiT context.
-    // have_cover only means src_audio is physically present (also used for timbre).
+    // have_cover only means src_audio is physically present.
     bool use_source_context = (task == TASK_COVER || task == TASK_REPAINT || task == TASK_LEGO ||
                                task == TASK_EXTRACT || task == TASK_COMPLETE);
 
