@@ -27,6 +27,7 @@
 	let ditModels = $derived(app.props?.models.dit ?? []);
 	let lmModels = $derived(app.props?.models.lm ?? []);
 	let loraList = $derived(app.props?.loras ?? []);
+	let loraStale = $derived(!!app.request.lora && !loraList.includes(String(app.request.lora)));
 	let taskType = $derived(app.request.task_type || '');
 	let needsTrack = $derived(
 		taskType === TASK_LEGO || taskType === TASK_EXTRACT || taskType === TASK_COMPLETE
@@ -190,7 +191,7 @@
 		if (r.track) out.track = String(r.track);
 		if (r.synth_model) out.synth_model = String(r.synth_model);
 		if (r.lm_model) out.lm_model = String(r.lm_model);
-		if (r.lora) out.lora = String(r.lora);
+		if (r.lora && loraList.includes(String(r.lora))) out.lora = String(r.lora);
 		const lora_scale = num(r.lora_scale);
 		if (lora_scale != null) out.lora_scale = lora_scale;
 		return out;
@@ -306,7 +307,8 @@
 			if (app.request.track) synthParams.track = app.request.track;
 			// model routing from form
 			if (app.request.synth_model) synthParams.synth_model = app.request.synth_model;
-			if (app.request.lora) synthParams.lora = app.request.lora;
+			if (app.request.lora && loraList.includes(String(app.request.lora)))
+				synthParams.lora = app.request.lora;
 			const loraScale = num(app.request.lora_scale);
 			if (loraScale != null) synthParams.lora_scale = loraScale;
 			// repaint/complete: inject range from source audio selection
@@ -417,6 +419,10 @@
 			<div class="model-row">
 				<span class="model-label">LoRA</span>
 				<select bind:value={app.request.lora}>
+					<option value="">Disabled</option>
+					{#if loraStale}
+						<option value={app.request.lora} disabled>{app.request.lora}</option>
+					{/if}
 					{#each loraList as name}
 						<option value={name}>{name}</option>
 					{/each}
