@@ -3,7 +3,7 @@
 </script>
 
 {#if app.toast}
-	<div class="toast">{app.toast}</div>
+	<div class="toast" class:ok={app.toastOk}>{app.toast}</div>
 {/if}
 
 <style>
@@ -20,6 +20,9 @@
 		z-index: 9999;
 		pointer-events: none;
 		animation: fade-in 0.15s ease-out;
+	}
+	.toast.ok {
+		background: var(--ok);
 	}
 	@keyframes fade-in {
 		from {

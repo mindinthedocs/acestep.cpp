@@ -105,7 +105,7 @@
 	async function importAudio(file: File, ext: string) {
 		busy = true;
 		try {
-			toast('Understanding audio...');
+			toast('Understanding audio...', 4000, true);
 			const blob = new Blob([await file.arrayBuffer()], {
 				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
 			});
@@ -133,7 +133,7 @@
 			song.id = await putSong(song);
 			app.songs.unshift(song);
 
-			toast('Imported: ' + name);
+			toast('Imported: ' + name, 4000, true);
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {

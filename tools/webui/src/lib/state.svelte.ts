@@ -50,6 +50,7 @@ export const app = $state({
 	songs: [] as Song[],
 	props: null as AceProps | null,
 	toast: '' as string,
+	toastOk: false,
 	pendingRequests: [] as AceRequest[],
 	pendingIndex: 0,
 	refSongId: null as number | null,
@@ -60,9 +61,10 @@ export const app = $state({
 
 let toastTimer = 0;
 
-export function toast(msg: string, ms = 4000) {
+export function toast(msg: string, ms = 4000, ok = false) {
 	clearTimeout(toastTimer);
 	app.toast = msg;
+	app.toastOk = ok;
 	toastTimer = setTimeout(() => {
 		app.toast = '';
 	}, ms) as unknown as number;

@@ -76,7 +76,8 @@
 		--fg-dim: #999;
 		--border: #3a3a3a;
 		--focus: #2ed573;
-		--error: #ff6b6b;
+		--error: #c0392b;
+		--ok: #27ae60;
 		--waveform-dim: #555;
 		--waveform-play: #2ed573;
 		--waveform-range: #ff6b6b;
@@ -93,6 +94,7 @@
 		--border: #ccc;
 		--focus: #27ae60;
 		--error: #c0392b;
+		--ok: #27ae60;
 		--waveform-dim: #ccc;
 		--waveform-play: #27ae60;
 		--waveform-range: #e74c3c;
