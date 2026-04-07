@@ -213,8 +213,7 @@ static void teardown_log_capture() {
     }
     fflush(stderr);
     fd_dup2(g_real_stderr_fd, STDERR_FILENO);
-    fd_close(g_real_stderr_fd);
-    g_real_stderr_fd = -1;
+    // g_real_stderr_fd stays open: the reader thread writes to it
 }
 
 // RAII: captures stderr on construction, restores + joins reader on destruction.
@@ -232,6 +231,12 @@ struct LogCapture {
         cv_log.notify_all();
         if (reader.joinable()) {
             reader.join();
+        }
+
+        // reader is done draining the pipe, safe to close
+        if (g_real_stderr_fd >= 0) {
+            fd_close(g_real_stderr_fd);
+            g_real_stderr_fd = -1;
         }
     }
 };
