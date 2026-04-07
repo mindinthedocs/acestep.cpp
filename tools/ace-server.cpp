@@ -1097,14 +1097,32 @@ int main(int argc, char ** argv) {
         registry_scan_loras(&g_registry, loras_dir);
     }
 
-    // need at least one usable pipeline
+    // validate pipeline
     bool have_lm    = !g_registry.lm.empty();
-    bool have_synth = !g_registry.dit.empty() && !g_registry.text_enc.empty() && !g_registry.vae.empty();
-    if (!have_lm && !have_synth) {
-        fprintf(stderr, "[Server] ERROR: no usable pipeline\n");
-        fprintf(stderr, "  /lm requires:    at least one acestep-lm GGUF\n");
-        fprintf(stderr, "  /synth requires: at least one acestep-dit + one acestep-text-enc + one acestep-vae\n");
-        return 1;
+    bool have_dit   = !g_registry.dit.empty();
+    bool have_enc   = !g_registry.text_enc.empty();
+    bool have_vae   = !g_registry.vae.empty();
+    bool have_synth = have_dit && have_enc && have_vae;
+
+    // partial synth: some components found but pipeline incomplete
+    if (!have_synth && (have_dit || have_enc || have_vae)) {
+        char missing[64];
+        int  n = 0;
+        if (!have_dit) {
+            n += snprintf(missing + n, sizeof(missing) - n, "%sDiT", n ? ", " : "");
+        }
+        if (!have_enc) {
+            n += snprintf(missing + n, sizeof(missing) - n, "%sText-Enc", n ? ", " : "");
+        }
+        if (!have_vae) {
+            n += snprintf(missing + n, sizeof(missing) - n, "%sVAE", n ? ", " : "");
+        }
+        if (have_lm) {
+            fprintf(stderr, "[Server] WARNING: /synth unavailable, missing: %s\n", missing);
+        } else {
+            fprintf(stderr, "[Server] ERROR: no usable pipeline, synth missing: %s\n", missing);
+            return 1;
+        }
     }
 
     // clamp max_batch
@@ -1120,12 +1138,12 @@ int main(int argc, char ** argv) {
     ace_understand_default_params(&g_und_params);
     g_und_params.use_fa  = g_lm_params.use_fa;
     g_und_params.use_fsm = g_lm_params.use_fsm;
-    if (!g_registry.dit.empty() && !g_registry.vae.empty()) {
+    if (have_dit && have_vae) {
         g_und_params.dit_path = g_registry.dit[0].path.c_str();
         g_und_params.vae_path = g_registry.vae[0].path.c_str();
     }
 
-    bool have_understand = have_lm && !g_registry.dit.empty() && !g_registry.vae.empty();
+    bool have_understand = have_lm && have_dit && have_vae;
 
     // setup HTTP server
     httplib::Server svr;
