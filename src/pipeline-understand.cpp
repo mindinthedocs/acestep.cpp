@@ -74,9 +74,6 @@ struct AceUnderstand {
     BPETokenizer * bpe;            // active pointer (to bpe_storage or shared)
     MetadataFSM    fsm_template;
 
-    // DiT model type (for setting inference defaults in output)
-    bool is_turbo;
-
     double load_ms;
 };
 
@@ -110,7 +107,6 @@ AceUnderstand * ace_understand_load(const AceUnderstandParams * params) {
     ctx->model        = nullptr;
     ctx->bpe          = nullptr;
     ctx->fsq_backend  = nullptr;
-    ctx->is_turbo     = false;
 
     // Load VAE encoder (for audio encoding)
     if (params->vae_path) {
@@ -139,9 +135,6 @@ AceUnderstand * ace_understand_load(const AceUnderstandParams * params) {
         }
         ctx->silence.resize(15000 * 64);
         memcpy(ctx->silence.data(), sl, 15000 * 64 * sizeof(float));
-
-        // detect turbo vs SFT/base
-        ctx->is_turbo = gf_get_bool(gf, "acestep.is_turbo");
         gf_close(&gf);
 
         // FSQ tokenizer (CPU backend, weights in DiT GGUF)
@@ -430,16 +423,11 @@ int ace_understand_generate(AceUnderstand *    ctx,
     out->audio_codes = codes_str;
     fprintf(stderr, "[Understand-Result] audio_codes: %zu codes\n", codes.size());
 
-    // Set DiT defaults from model type (turbo vs SFT/base)
-    if (ctx->is_turbo) {
-        out->inference_steps = 8;
-        out->shift           = 3.0f;
-        out->guidance_scale  = 1.0f;
-    } else {
-        out->inference_steps = 50;
-        out->shift           = 1.0f;
-        out->guidance_scale  = 1.0f;
-    }
+    // DiT sampling params: 0 = auto-detect from the DiT model at synth time.
+    // understand does not know which DiT the user will synthesize with.
+    out->inference_steps = 0;
+    out->shift           = 0.0f;
+    out->guidance_scale  = 0.0f;
 
     fprintf(stderr, "[Understand] Load %.0f | Total %.0fms | seed=%u\n", ctx->load_ms, t_total.ms(), seed);
     return 0;

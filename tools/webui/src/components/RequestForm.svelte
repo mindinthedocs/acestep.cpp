@@ -145,7 +145,7 @@
 			const blob = new Blob([await file.arrayBuffer()], {
 				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
 			});
-			const result = await understandAudio(blob);
+			const result = await understandAudio(blob, app.request.lm_model as string);
 
 			setRequest(result);
 			app.pendingRequests = [];
