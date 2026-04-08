@@ -48,6 +48,10 @@ export interface AceProps {
 	loras: string[];
 	cli: Record<string, string | number>;
 	default: AceRequest;
+	presets: {
+		turbo: { inference_steps: number; guidance_scale: number; shift: number };
+		sft: { inference_steps: number; guidance_scale: number; shift: number };
+	};
 }
 
 // what we store in IndexedDB per song

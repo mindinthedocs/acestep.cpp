@@ -251,46 +251,112 @@ bool request_parse(AceRequest * r, const char * path) {
     return true;
 }
 
-// build a yyjson mutable document from an AceRequest
-static yyjson_mut_doc * request_build_doc(const AceRequest * r) {
+// build a yyjson mutable document from an AceRequest.
+// sparse=true: omit fields at their request_init default.
+// sparse=false: serialize everything (for /props documentation).
+static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     yyjson_mut_doc * doc  = yyjson_mut_doc_new(NULL);
     yyjson_mut_val * root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
 
+    // single source of truth: compare against request_init defaults
+    AceRequest def;
+    request_init(&def);
+    bool all = !sparse;
+
+    // always present
     yyjson_mut_obj_add_str(doc, root, "caption", r->caption.c_str());
-    yyjson_mut_obj_add_str(doc, root, "lyrics", r->lyrics.c_str());
-    yyjson_mut_obj_add_int(doc, root, "bpm", r->bpm);
-    yyjson_mut_obj_add_real(doc, root, "duration", r->duration);
-    yyjson_mut_obj_add_str(doc, root, "keyscale", r->keyscale.c_str());
-    yyjson_mut_obj_add_str(doc, root, "timesignature", r->timesignature.c_str());
-    yyjson_mut_obj_add_str(doc, root, "vocal_language", r->vocal_language.c_str());
     yyjson_mut_obj_add_sint(doc, root, "seed", r->seed);
-    yyjson_mut_obj_add_int(doc, root, "lm_batch_size", r->lm_batch_size);
-    yyjson_mut_obj_add_int(doc, root, "synth_batch_size", r->synth_batch_size);
-    yyjson_mut_obj_add_real(doc, root, "lm_temperature", r->lm_temperature);
-    yyjson_mut_obj_add_real(doc, root, "lm_cfg_scale", r->lm_cfg_scale);
-    yyjson_mut_obj_add_real(doc, root, "lm_top_p", r->lm_top_p);
-    yyjson_mut_obj_add_int(doc, root, "lm_top_k", r->lm_top_k);
-    yyjson_mut_obj_add_str(doc, root, "lm_negative_prompt", r->lm_negative_prompt.c_str());
-    yyjson_mut_obj_add_bool(doc, root, "use_cot_caption", r->use_cot_caption);
-    yyjson_mut_obj_add_int(doc, root, "inference_steps", r->inference_steps);
-    yyjson_mut_obj_add_real(doc, root, "guidance_scale", r->guidance_scale);
-    yyjson_mut_obj_add_real(doc, root, "shift", r->shift);
-    yyjson_mut_obj_add_real(doc, root, "audio_cover_strength", r->audio_cover_strength);
-    yyjson_mut_obj_add_real(doc, root, "cover_noise_strength", r->cover_noise_strength);
-    yyjson_mut_obj_add_real(doc, root, "repainting_start", r->repainting_start);
-    yyjson_mut_obj_add_real(doc, root, "repainting_end", r->repainting_end);
-    yyjson_mut_obj_add_real(doc, root, "repaint_strength", r->repaint_strength);
-    if (!r->task_type.empty()) {
-        yyjson_mut_obj_add_str(doc, root, "task_type", r->task_type.c_str());
+
+    // text
+    if (all || r->lyrics != def.lyrics) {
+        yyjson_mut_obj_add_str(doc, root, "lyrics", r->lyrics.c_str());
     }
-    if (!r->track.empty()) {
-        yyjson_mut_obj_add_str(doc, root, "track", r->track.c_str());
+    if (all || r->audio_codes != def.audio_codes) {
+        yyjson_mut_obj_add_str(doc, root, "audio_codes", r->audio_codes.c_str());
     }
-    if (!r->infer_method.empty()) {
+
+    // metadata
+    if (all || r->bpm != def.bpm) {
+        yyjson_mut_obj_add_int(doc, root, "bpm", r->bpm);
+    }
+    if (all || r->duration != def.duration) {
+        yyjson_mut_obj_add_real(doc, root, "duration", r->duration);
+    }
+    if (all || r->keyscale != def.keyscale) {
+        yyjson_mut_obj_add_str(doc, root, "keyscale", r->keyscale.c_str());
+    }
+    if (all || r->timesignature != def.timesignature) {
+        yyjson_mut_obj_add_str(doc, root, "timesignature", r->timesignature.c_str());
+    }
+    if (all || r->vocal_language != def.vocal_language) {
+        yyjson_mut_obj_add_str(doc, root, "vocal_language", r->vocal_language.c_str());
+    }
+
+    // LM control
+    if (all || r->lm_batch_size != def.lm_batch_size) {
+        yyjson_mut_obj_add_int(doc, root, "lm_batch_size", r->lm_batch_size);
+    }
+    if (all || r->lm_temperature != def.lm_temperature) {
+        yyjson_mut_obj_add_real(doc, root, "lm_temperature", r->lm_temperature);
+    }
+    if (all || r->lm_cfg_scale != def.lm_cfg_scale) {
+        yyjson_mut_obj_add_real(doc, root, "lm_cfg_scale", r->lm_cfg_scale);
+    }
+    if (all || r->lm_top_p != def.lm_top_p) {
+        yyjson_mut_obj_add_real(doc, root, "lm_top_p", r->lm_top_p);
+    }
+    if (all || r->lm_top_k != def.lm_top_k) {
+        yyjson_mut_obj_add_int(doc, root, "lm_top_k", r->lm_top_k);
+    }
+    if (all || r->lm_negative_prompt != def.lm_negative_prompt) {
+        yyjson_mut_obj_add_str(doc, root, "lm_negative_prompt", r->lm_negative_prompt.c_str());
+    }
+    if (all || r->use_cot_caption != def.use_cot_caption) {
+        yyjson_mut_obj_add_bool(doc, root, "use_cot_caption", r->use_cot_caption);
+    }
+
+    // DiT control (0 = auto-detect from model)
+    if (all || r->inference_steps != def.inference_steps) {
+        yyjson_mut_obj_add_int(doc, root, "inference_steps", r->inference_steps);
+    }
+    if (all || r->guidance_scale != def.guidance_scale) {
+        yyjson_mut_obj_add_real(doc, root, "guidance_scale", r->guidance_scale);
+    }
+    if (all || r->shift != def.shift) {
+        yyjson_mut_obj_add_real(doc, root, "shift", r->shift);
+    }
+    if (all || r->infer_method != def.infer_method) {
         yyjson_mut_obj_add_str(doc, root, "infer_method", r->infer_method.c_str());
     }
-    yyjson_mut_obj_add_str(doc, root, "audio_codes", r->audio_codes.c_str());
+
+    // batch
+    if (all || r->synth_batch_size != def.synth_batch_size) {
+        yyjson_mut_obj_add_int(doc, root, "synth_batch_size", r->synth_batch_size);
+    }
+
+    // cover/repaint
+    if (all || r->audio_cover_strength != def.audio_cover_strength) {
+        yyjson_mut_obj_add_real(doc, root, "audio_cover_strength", r->audio_cover_strength);
+    }
+    if (all || r->cover_noise_strength != def.cover_noise_strength) {
+        yyjson_mut_obj_add_real(doc, root, "cover_noise_strength", r->cover_noise_strength);
+    }
+    if (all || r->repainting_start != def.repainting_start) {
+        yyjson_mut_obj_add_real(doc, root, "repainting_start", r->repainting_start);
+    }
+    if (all || r->repainting_end != def.repainting_end) {
+        yyjson_mut_obj_add_real(doc, root, "repainting_end", r->repainting_end);
+    }
+    if (all || r->repaint_strength != def.repaint_strength) {
+        yyjson_mut_obj_add_real(doc, root, "repaint_strength", r->repaint_strength);
+    }
+    if (all || r->task_type != def.task_type) {
+        yyjson_mut_obj_add_str(doc, root, "task_type", r->task_type.c_str());
+    }
+    if (all || r->track != def.track) {
+        yyjson_mut_obj_add_str(doc, root, "track", r->track.c_str());
+    }
 
     return doc;
 }
@@ -302,7 +368,7 @@ bool request_write(const AceRequest * r, const char * path) {
         return false;
     }
 
-    yyjson_mut_doc * doc = request_build_doc(r);
+    yyjson_mut_doc * doc = request_build_doc(r, true);
     size_t           len;
     char *           json = yyjson_mut_write(doc, WRITE_FLAGS | YYJSON_WRITE_NEWLINE_AT_END, &len);
     yyjson_mut_doc_free(doc);
@@ -315,8 +381,8 @@ bool request_write(const AceRequest * r, const char * path) {
     return true;
 }
 
-std::string request_to_json(const AceRequest * r) {
-    yyjson_mut_doc * doc = request_build_doc(r);
+std::string request_to_json(const AceRequest * r, bool sparse) {
+    yyjson_mut_doc * doc = request_build_doc(r, sparse);
     size_t           len;
     char *           json = yyjson_mut_write(doc, WRITE_FLAGS, &len);
     yyjson_mut_doc_free(doc);

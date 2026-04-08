@@ -965,14 +965,33 @@ static void handle_props(const httplib::Request &, httplib::Response & res) {
     yyjson_mut_obj_add_int(doc, cli, "mp3_bitrate", g_mp3_kbps);
 
     // default: full AceRequest with all defaults from request_init().
-    // the webui reads this to populate placeholders.
+    // the webui reads this to populate LM placeholders.
+    // DiT fields (inference_steps, guidance_scale, shift) are 0 = auto-detect;
+    // their resolved placeholders come from presets below.
     AceRequest defaults;
     request_init(&defaults);
-    std::string      defaults_str  = request_to_json(&defaults);
+    std::string      defaults_str  = request_to_json(&defaults, false);
     yyjson_doc *     defaults_doc  = yyjson_read(defaults_str.c_str(), defaults_str.size(), 0);
     yyjson_mut_val * defaults_copy = yyjson_val_mut_copy(doc, yyjson_doc_get_root(defaults_doc));
     yyjson_mut_obj_add_val(doc, root, "default", defaults_copy);
     yyjson_doc_free(defaults_doc);
+
+    // presets: auto-detect values for DiT sampling params.
+    // the webui switches placeholders based on the selected DiT model.
+    yyjson_mut_val * presets = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_val(doc, root, "presets", presets);
+
+    yyjson_mut_val * turbo = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, turbo, "inference_steps", 8);
+    yyjson_mut_obj_add_real(doc, turbo, "guidance_scale", 1.0);
+    yyjson_mut_obj_add_real(doc, turbo, "shift", 3.0);
+    yyjson_mut_obj_add_val(doc, presets, "turbo", turbo);
+
+    yyjson_mut_val * sft = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, sft, "inference_steps", 50);
+    yyjson_mut_obj_add_real(doc, sft, "guidance_scale", 1.0);
+    yyjson_mut_obj_add_real(doc, sft, "shift", 1.0);
+    yyjson_mut_obj_add_val(doc, presets, "sft", sft);
 
     // serialize
     yyjson_write_flag flags = YYJSON_WRITE_PRETTY | YYJSON_WRITE_PRETTY_TWO_SPACES | YYJSON_WRITE_FP_TO_FIXED(2);

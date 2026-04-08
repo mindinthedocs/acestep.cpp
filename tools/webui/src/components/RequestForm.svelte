@@ -31,6 +31,13 @@
 	let loraList = $derived(app.props?.loras ?? []);
 	let loraStale = $derived(!!app.request.lora && !loraList.includes(String(app.request.lora)));
 	let taskType = $derived(app.request.task_type || '');
+	let dp = $derived(
+		app.props?.presets
+			? String(app.request.synth_model || '').includes('turbo')
+				? app.props.presets.turbo
+				: app.props.presets.sft
+			: null
+	);
 	let needsTrack = $derived(
 		taskType === TASK_LEGO || taskType === TASK_EXTRACT || taskType === TASK_COMPLETE
 	);
@@ -331,8 +338,8 @@
 
 			// read synth params from the form (global, not per-pending).
 			const synthBatch = Math.max(1, Number(app.request.synth_batch_size) || 1);
-			const userSeed = Number(app.request.seed);
-			const hasSeed = Number.isFinite(userSeed) && userSeed >= 0;
+			const userSeed = num(app.request.seed);
+			const hasSeed = userSeed != null && userSeed >= 0;
 			const synthParams: Partial<AceRequest> = {};
 			const steps = num(app.request.inference_steps);
 			if (steps != null) synthParams.inference_steps = steps;
@@ -378,7 +385,7 @@
 				const base = hasSeed ? userSeed : Math.floor(Math.random() * 0x100000000);
 				toSend.push({ ...r, ...synthParams, seed: base, synth_batch_size: synthBatch });
 				for (let i = 0; i < synthBatch; i++) {
-					expanded.push({ ...r, ...synthParams, seed: base + i, synth_batch_size: 1 });
+					expanded.push({ ...r, ...synthParams, seed: base + i });
 				}
 			}
 
@@ -659,7 +666,7 @@
 				<label
 					>Steps <input
 						type="text"
-						placeholder={ph(d?.inference_steps)}
+						placeholder={ph(dp?.inference_steps)}
 						bind:value={app.request.inference_steps}
 					/></label
 				>
@@ -687,14 +694,14 @@
 				<label
 					>CFG scale <input
 						type="text"
-						placeholder={ph(d?.guidance_scale)}
+						placeholder={ph(dp?.guidance_scale)}
 						bind:value={app.request.guidance_scale}
 					/></label
 				>
 				<label
 					>Shift <input
 						type="text"
-						placeholder={ph(d?.shift)}
+						placeholder={ph(dp?.shift)}
 						bind:value={app.request.shift}
 					/></label
 				>
