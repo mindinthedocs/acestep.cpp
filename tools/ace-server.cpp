@@ -151,6 +151,7 @@ static AceUnderstandParams g_und_params;
 static int  g_max_batch   = 1;
 static int  g_mp3_kbps    = 128;
 static bool g_keep_loaded = false;
+static bool g_ignore_disconnect = false;
 
 // log capture: intercept stderr via pipe, forward to terminal + ring buffer.
 // SSE clients connect to /logs and receive lines in real time.
@@ -281,6 +282,9 @@ static void handle_logs(const httplib::Request &, httplib::Response & res) {
 // cancel trampoline: bridges httplib's is_connection_closed to our cancel callback.
 // data points to the std::function<bool()> from httplib::Request.
 static bool server_cancel(void * data) {
+    if (g_ignore_disconnect) {
+        return false;
+    }
     auto * fn = (const std::function<bool()> *) data;
     return (*fn)();
 }
@@ -1061,6 +1065,7 @@ static void usage(const char * prog) {
             "  --timeout <sec>         HTTP timeout in seconds (default: 30)\n"
             "  --max-batch <N>         LM batch limit (default: 1)\n"
             "  --max-seq <N>           KV cache size (default: 8192)\n"
+            "  --ignore-disconnect     Disable cancellation on disconnection\n"
             "\n"
             "Debug:\n"
             "  --no-fsm                Disable FSM constrained decoding\n"
@@ -1114,6 +1119,8 @@ int main(int argc, char ** argv) {
             timeout = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--max-batch") && i + 1 < argc) {
             g_max_batch = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--ignore-disconnect")) {
+            g_ignore_disconnect = true;
 
             // debug
         } else if (!strcmp(argv[i], "--no-fsm")) {
