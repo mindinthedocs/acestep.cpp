@@ -1,12 +1,21 @@
 // ace-server.cpp: HTTP server for ACE-Step music generation
 //
-// Single binary, three endpoints (POST /lm, POST /synth, POST /understand),
-// one port. Models are discovered by scanning --models directory at startup
-// (reads GGUF metadata only, no weights loaded).
+// Single binary, one port. All compute endpoints (POST /lm, POST /synth,
+// POST /understand) are asynchronous: they validate the request, create a
+// job, push it to a FIFO queue, and return the job ID immediately.
+// A single worker thread processes jobs in order.
+// Clients poll GET /job?id=N for status and fetch results with
+// GET /job?id=N&result=1. POST /job?id=N&cancel=1 cancels a job.
 //
+// Job IDs are random 64-bit hex strings (non-predictable).
+// Completed jobs are evicted FIFO when the pool exceeds MAX_JOBS.
+// Running jobs are never evicted.
+//
+// Models are discovered by scanning --models directory at startup
+// (reads GGUF metadata only, no weights loaded).
 // Each request loads the model, executes, and frees it. No model persists
-// in VRAM between requests unless --keep-loaded is set. A single GPU mutex
-// serializes access (503 if busy).
+// in VRAM between requests unless --keep-loaded is set. GPU access is
+// serialized by the single worker thread (no mutex needed).
 //
 // Available models are classified by their GGUF general.architecture:
 //   acestep-lm       -> lm bucket
@@ -42,14 +51,20 @@
 #    pragma GCC diagnostic pop
 #endif
 
+#include <atomic>
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -123,9 +138,36 @@ static void on_signal(int) {
     }
 }
 
-// single GPU mutex. httplib uses a thread pool, but only one request
-// can use the GPU at a time. try_to_lock returns 503 if busy.
-static std::mutex mtx_gpu;
+// work queue: all GPU jobs go through a single FIFO queue processed
+// by one worker thread. GPU access is serialized by construction.
+static std::deque<std::function<void()>> g_work_queue;
+static std::mutex                        mtx_work;
+static std::condition_variable           cv_work;
+static bool                              g_work_stop = false;
+
+static void work_push(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lock(mtx_work);
+    g_work_queue.push_back(std::move(fn));
+    cv_work.notify_one();
+}
+
+// worker thread: consume jobs in FIFO order until shutdown.
+// on stop: finishes the current job, discards pending ones.
+static void worker_main() {
+    for (;;) {
+        std::function<void()> fn;
+        {
+            std::unique_lock<std::mutex> lock(mtx_work);
+            cv_work.wait(lock, [] { return g_work_stop || !g_work_queue.empty(); });
+            if (g_work_stop) {
+                break;
+            }
+            fn = std::move(g_work_queue.front());
+            g_work_queue.pop_front();
+        }
+        fn();
+    }
+}
 
 // pipeline contexts. NULL when not loaded.
 static AceLm *         g_ctx_lm         = nullptr;
@@ -151,6 +193,89 @@ static AceUnderstandParams g_und_params;
 static int  g_max_batch   = 1;
 static int  g_mp3_kbps    = 128;
 static bool g_keep_loaded = false;
+
+// job system: all compute endpoints create a job and return its ID
+// immediately. the worker thread processes jobs in FIFO order, stores
+// the result. the client polls GET /job?id=N until done, then fetches
+// the result with GET /job?id=N&result=1.
+// cancel: POST /job?id=N&cancel=1 sets the per-job flag.
+struct Job {
+    std::string       id;
+    std::atomic<int>  status{ 0 };  // 0=running 1=done 2=failed 3=cancelled
+    std::string       result_body;
+    std::string       result_mime;
+    std::atomic<bool> cancel{ false };
+
+    // memory ordering contract: result_body and result_mime are written
+    // before status is stored (seq_cst). the client loads status (seq_cst)
+    // and only reads result fields after seeing done/failed. this guarantees
+    // visibility without an explicit mutex on the result fields.
+};
+
+static std::mutex                                            mtx_jobs;
+static std::unordered_map<std::string, std::shared_ptr<Job>> g_jobs;
+static std::deque<std::string>                               g_job_order;
+static const int                                             MAX_JOBS = 32;
+
+// generate a random hex ID (64 bits of entropy, non-predictable)
+static std::string job_make_id() {
+    static std::mt19937_64      rng(std::random_device{}());
+    static std::mutex           mtx_rng;
+    std::lock_guard<std::mutex> lock(mtx_rng);
+    char                        buf[17];
+    snprintf(buf, sizeof(buf), "%016llx", (unsigned long long) rng());
+    return buf;
+}
+
+static std::shared_ptr<Job> job_create() {
+    std::lock_guard<std::mutex> lock(mtx_jobs);
+    auto                        job = std::make_shared<Job>();
+    job->id                         = job_make_id();
+    g_jobs[job->id]                 = job;
+    g_job_order.push_back(job->id);
+
+    // evict oldest completed jobs to stay under MAX_JOBS.
+    // running jobs (status 0) are never evicted.
+    while ((int) g_job_order.size() > MAX_JOBS) {
+        bool evicted = false;
+        for (auto it = g_job_order.begin(); it != g_job_order.end(); ++it) {
+            auto jit = g_jobs.find(*it);
+            if (jit == g_jobs.end() || jit->second->status.load() != 0) {
+                if (jit != g_jobs.end()) {
+                    g_jobs.erase(jit);
+                }
+                g_job_order.erase(it);
+                evicted = true;
+                break;
+            }
+        }
+        if (!evicted) {
+            break;
+        }
+    }
+    return job;
+}
+
+static std::shared_ptr<Job> job_find(const std::string & id) {
+    std::lock_guard<std::mutex> lock(mtx_jobs);
+    auto                        it = g_jobs.find(id);
+    return it != g_jobs.end() ? it->second : nullptr;
+}
+
+static const char * job_status_str(int s) {
+    switch (s) {
+        case 0:
+            return "running";
+        case 1:
+            return "done";
+        case 2:
+            return "failed";
+        case 3:
+            return "cancelled";
+        default:
+            return "unknown";
+    }
+}
 
 // log capture: intercept stderr via pipe, forward to terminal + ring buffer.
 // SSE clients connect to /logs and receive lines in real time.
@@ -278,11 +403,10 @@ static void handle_logs(const httplib::Request &, httplib::Response & res) {
         });
 }
 
-// cancel trampoline: bridges httplib's is_connection_closed to our cancel callback.
-// data points to the std::function<bool()> from httplib::Request.
-static bool server_cancel(void * data) {
-    auto * fn = (const std::function<bool()> *) data;
-    return (*fn)();
+// cancel callback: checks the per-job cancel flag.
+static bool server_cancel_job(void * data) {
+    auto * flag = (const std::atomic<bool> *) data;
+    return flag && flag->load(std::memory_order_relaxed);
 }
 
 // helper: set a JSON error response
@@ -296,13 +420,6 @@ static void json_error(httplib::Response & res, int status, const char * msg) {
     res.status = status;
     res.set_content(json, "application/json");
     free(json);
-}
-
-// helper: 503 when GPU is busy
-static void json_busy(httplib::Response & res) {
-    res.status = 503;
-    res.set_header("Retry-After", "5");
-    res.set_content("{\"error\":\"Server busy\"}", "application/json");
 }
 
 // resolve model name: explicit request > already loaded > first in bucket
@@ -501,9 +618,60 @@ static bool ensure_synth(const std::string & dit_name, const std::string & lora_
     return true;
 }
 
+// LM worker: generates metadata + lyrics + codes, stores JSON result in job.
+static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, ServerFields sf, int lm_batch_size, int mode) {
+    if (job->cancel.load()) {
+        job->status.store(3);
+        return;
+    }
+
+    // load
+    std::string lm_name = resolve_name(g_registry.lm, sf.lm_model, g_loaded_lm);
+    if (!ensure_lm(lm_name)) {
+        job->status.store(2);
+        return;
+    }
+
+    // execute
+    std::vector<AceRequest> out(lm_batch_size);
+    int rc = ace_lm_generate(g_ctx_lm, &ace_req, lm_batch_size, out.data(), NULL, NULL, server_cancel_job,
+                             (void *) &job->cancel, mode);
+
+    // free
+    if (!g_keep_loaded) {
+        ace_understand_free(g_ctx_understand);
+        g_ctx_understand = nullptr;
+        ace_lm_free(g_ctx_lm);
+        g_ctx_lm = nullptr;
+        g_loaded_lm.clear();
+        g_loaded_und_dit.clear();
+    }
+
+    if (rc != 0) {
+        job->status.store(job->cancel.load() ? 3 : 2);
+        return;
+    }
+
+    // serialize output as a JSON array
+    std::string body = "[";
+    for (int i = 0; i < lm_batch_size; i++) {
+        if (i > 0) {
+            body += ",";
+        }
+        body += request_to_json(&out[i]);
+    }
+    body += "]";
+
+    job->result_body = std::move(body);
+    job->result_mime = "application/json";
+    job->status.store(1);
+    fprintf(stderr, "[Server] Job %s done (LM, %d results)\n", job->id.c_str(), lm_batch_size);
+}
+
 // POST /lm[?mode=inspire|format]
 // accepts: AceRequest JSON (+ optional "lm_model" for LM selection)
-// returns: JSON array of enriched AceRequests (lm_batch_size controls count)
+// returns: JSON {"id":"N"} immediately. result is a JSON array of enriched
+// AceRequests (lm_batch_size controls count).
 // modes:
 //   (none)    full: metadata + lyrics + audio codes
 //   inspire   short caption -> metadata + lyrics (no codes)
@@ -551,55 +719,161 @@ static void handle_lm(const httplib::Request & req, httplib::Response & res) {
         lm_batch_size = g_max_batch;
     }
 
-    // try to acquire GPU. 503 instantly if busy.
-    std::unique_lock<std::mutex> lock(mtx_gpu, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        json_busy(res);
+    auto job = job_create();
+    fprintf(stderr, "[Server] Job %s created (LM, mode=%d)\n", job->id.c_str(), mode);
+
+    work_push([job, ace_req, sf, lm_batch_size, mode]() { lm_worker(job, ace_req, sf, lm_batch_size, mode); });
+
+    std::string body = "{\"id\":\"" + job->id + "\"}";
+    res.set_content(body, "application/json");
+}
+
+// synth worker: processes synth request, stores audio result in job.
+static void synth_worker(std::shared_ptr<Job>    job,
+                         std::vector<AceRequest> ace_reqs,
+                         ServerFields            sf,
+                         float *                 src_interleaved,
+                         int                     src_len,
+                         float *                 ref_interleaved,
+                         int                     ref_len,
+                         bool                    output_wav,
+                         int                     peak_clip) {
+    // expand synth_batch_size and process per-request groups.
+    // each original request = one pipeline call (same codes = same T).
+    // synth_batch_size variations within a group share the same T -> true GPU batch.
+    // different requests can have different T (code length or duration) -> separate calls.
+    // pre-compute total tracks across all groups
+    int batch_n     = (int) ace_reqs.size();
+    int total_alloc = 0;
+    for (int ri = 0; ri < batch_n; ri++) {
+        int sbs = ace_reqs[ri].synth_batch_size;
+        total_alloc += sbs < 1 ? 1 : (sbs > 9 ? 9 : sbs);
+    }
+    std::vector<AceAudio> audio(total_alloc);
+    int                   audio_idx = 0;
+
+    if (job->cancel.load()) {
+        free(src_interleaved);
+        free(ref_interleaved);
+        job->status.store(3);
         return;
     }
 
     // load
-    std::string lm_name = resolve_name(g_registry.lm, sf.lm_model, g_loaded_lm);
-    if (!ensure_lm(lm_name)) {
-        json_error(res, 500, "Failed to load LM");
+    std::string dit_name = resolve_name(g_registry.dit, sf.synth_model, g_loaded_dit);
+    if (!ensure_synth(dit_name, sf.lora, sf.lora_scale)) {
+        free(src_interleaved);
+        free(ref_interleaved);
+        job->status.store(2);
         return;
     }
 
-    // execute
-    std::vector<AceRequest> out(lm_batch_size);
-    int rc = ace_lm_generate(g_ctx_lm, &ace_req, lm_batch_size, out.data(), NULL, NULL, server_cancel,
-                             (void *) &req.is_connection_closed, mode);
-
-    // free
-    if (!g_keep_loaded) {
-        ace_understand_free(g_ctx_understand);
-        g_ctx_understand = nullptr;
-        ace_lm_free(g_ctx_lm);
-        g_ctx_lm = nullptr;
-        g_loaded_lm.clear();
-        g_loaded_und_dit.clear();
-    }
-    lock.unlock();
-
-    if (rc != 0) {
-        json_error(res, 500, "LM generation failed");
-        return;
-    }
-
-    // serialize output as a JSON array
-    std::string body = "[";
-    for (int i = 0; i < lm_batch_size; i++) {
-        if (i > 0) {
-            body += ",";
+    for (int ri = 0; ri < batch_n; ri++) {
+        auto & r   = ace_reqs[ri];
+        int    sbs = r.synth_batch_size;
+        if (sbs < 1) {
+            sbs = 1;
         }
-        body += request_to_json(&out[i]);
-    }
-    body += "]";
+        if (sbs > 9) {
+            sbs = 9;
+        }
 
-    res.set_content(body, "application/json");
+        // resolve seed once per original request
+        request_resolve_seed(&r);
+        long long base_seed = r.seed;
+
+        // build group: N copies of the same request with consecutive seeds
+        std::vector<AceRequest> group(sbs);
+        for (int i = 0; i < sbs; i++) {
+            group[i]      = r;
+            group[i].seed = base_seed + i;
+        }
+
+        std::vector<AceAudio> group_audio(sbs);
+        int rc = ace_synth_generate(g_ctx_synth, group.data(), src_interleaved, src_len, ref_interleaved, ref_len, sbs,
+                                    group_audio.data(), server_cancel_job, (void *) &job->cancel);
+
+        if (rc != 0) {
+            if (!g_keep_loaded) {
+                ace_synth_free(g_ctx_synth);
+                g_ctx_synth = nullptr;
+                g_loaded_dit.clear();
+                g_loaded_lora.clear();
+            }
+            free(src_interleaved);
+            free(ref_interleaved);
+            for (int j = 0; j < audio_idx; j++) {
+                ace_audio_free(&audio[j]);
+            }
+            for (int j = 0; j < sbs; j++) {
+                ace_audio_free(&group_audio[j]);
+            }
+            job->status.store(job->cancel.load() ? 3 : 2);
+            return;
+        }
+
+        for (int i = 0; i < sbs; i++) {
+            audio[audio_idx++] = group_audio[i];
+        }
+    }
+
+    // free pipeline
+    if (!g_keep_loaded) {
+        ace_synth_free(g_ctx_synth);
+        g_ctx_synth = nullptr;
+        g_loaded_dit.clear();
+        g_loaded_lora.clear();
+    }
+    free(src_interleaved);
+    free(ref_interleaved);
+    int total_tracks = audio_idx;
+
+    // encode each track (peak normalize + encode)
+    const char * mime = output_wav ? "audio/wav" : "audio/mpeg";
+
+    std::vector<std::string> encoded(total_tracks);
+    for (int b = 0; b < total_tracks; b++) {
+        if (!audio[b].samples) {
+            continue;
+        }
+        audio_normalize(audio[b].samples, audio[b].n_samples * 2, peak_clip);
+        if (output_wav) {
+            encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000);
+        } else {
+            encoded[b] = audio_encode_mp3(audio[b].samples, audio[b].n_samples, 48000, g_mp3_kbps, server_cancel_job,
+                                          (void *) &job->cancel);
+        }
+        ace_audio_free(&audio[b]);
+    }
+
+    // store result in job
+    // single track: raw audio body
+    if (total_tracks == 1) {
+        job->result_body = std::move(encoded[0]);
+        job->result_mime = mime;
+    } else {
+        // multiple tracks: multipart/mixed, each part is raw audio
+        std::string boundary = "ace-batch-boundary";
+        std::string body;
+        for (int b = 0; b < total_tracks; b++) {
+            body += "--" + boundary + "\r\n";
+            body += "Content-Type: ";
+            body += mime;
+            body += "\r\n\r\n";
+            body += encoded[b];
+            body += "\r\n";
+        }
+        body += "--" + boundary + "--\r\n";
+        job->result_body = std::move(body);
+        job->result_mime = "multipart/mixed; boundary=" + boundary;
+    }
+
+    job->status.store(job->cancel.load() ? 3 : 1);
+    fprintf(stderr, "[Server] Job %s done (%d tracks)\n", job->id.c_str(), total_tracks);
 }
 
 // POST /synth[?wav=1]
+// returns JSON {"id":"N"} immediately.
 // input:
 //   application/json body        -> single request {} or batch [{req0}, {req1}, ...]
 //   multipart/form-data          -> single request + audio file(s)
@@ -700,147 +974,70 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
         return;
     }
 
-    // expand synth_batch_size and process per-request groups.
-    // each original request = one pipeline call (same codes = same T).
-    // synth_batch_size variations within a group share the same T -> true GPU batch.
-    // different requests can have different T (code length or duration) -> separate calls.
-    // pre-compute total tracks across all groups
-    int batch_n     = (int) ace_reqs.size();
-    int total_alloc = 0;
-    for (int ri = 0; ri < batch_n; ri++) {
-        int sbs = ace_reqs[ri].synth_batch_size;
-        total_alloc += sbs < 1 ? 1 : (sbs > 9 ? 9 : sbs);
-    }
-    std::vector<AceAudio> audio(total_alloc);
-    int                   audio_idx = 0;
+    // output format: ?wav=1 for WAV, default MP3
+    bool output_wav = req.has_param("wav") && req.get_param_value("wav") == "1";
+    int  peak_clip  = ace_reqs[0].peak_clip;
 
-    // try_lock: 503 instantly if GPU busy.
-    std::unique_lock<std::mutex> lock(mtx_gpu, std::try_to_lock);
-    if (!lock.owns_lock()) {
+    // create job, spawn worker, return ID
+    auto job = job_create();
+    fprintf(stderr, "[Server] Job %s created (%d requests)\n", job->id.c_str(), (int) ace_reqs.size());
+
+    work_push([job, reqs = std::move(ace_reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav,
+               peak_clip]() mutable {
+        synth_worker(job, std::move(reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav,
+                     peak_clip);
+    });
+
+    // return job ID immediately
+    std::string body = "{\"id\":\"" + job->id + "\"}";
+    res.set_content(body, "application/json");
+}
+
+// understand worker: load LM + tokenizer, run understand, store JSON result in job.
+static void understand_worker(std::shared_ptr<Job> job,
+                              AceRequest           ace_req,
+                              ServerFields         sf,
+                              float *              src_interleaved,
+                              int                  src_len) {
+    if (job->cancel.load()) {
         free(src_interleaved);
-        free(ref_interleaved);
-        json_busy(res);
+        job->status.store(3);
         return;
     }
 
-    // load
+    // load (LM + tokenizer from selected DiT)
+    std::string lm_name  = resolve_name(g_registry.lm, sf.lm_model, g_loaded_lm);
     std::string dit_name = resolve_name(g_registry.dit, sf.synth_model, g_loaded_dit);
-    if (!ensure_synth(dit_name, sf.lora, sf.lora_scale)) {
+    if (!ensure_understand(lm_name, dit_name)) {
         free(src_interleaved);
-        free(ref_interleaved);
-        json_error(res, 500, "Failed to load synth pipeline");
+        job->status.store(2);
         return;
     }
 
-    for (int ri = 0; ri < batch_n; ri++) {
-        auto & r   = ace_reqs[ri];
-        int    sbs = r.synth_batch_size;
-        if (sbs < 1) {
-            sbs = 1;
-        }
-        if (sbs > 9) {
-            sbs = 9;
-        }
-
-        // resolve seed once per original request
-        request_resolve_seed(&r);
-        long long base_seed = r.seed;
-
-        // build group: N copies of the same request with consecutive seeds
-        std::vector<AceRequest> group(sbs);
-        for (int i = 0; i < sbs; i++) {
-            group[i]      = r;
-            group[i].seed = base_seed + i;
-        }
-
-        std::vector<AceAudio> group_audio(sbs);
-        int rc = ace_synth_generate(g_ctx_synth, group.data(), src_interleaved, src_len, ref_interleaved, ref_len, sbs,
-                                    group_audio.data(), server_cancel, (void *) &req.is_connection_closed);
-
-        if (rc != 0) {
-            if (!g_keep_loaded) {
-                ace_synth_free(g_ctx_synth);
-                g_ctx_synth = nullptr;
-                g_loaded_dit.clear();
-                g_loaded_lora.clear();
-            }
-            lock.unlock();
-            free(src_interleaved);
-            free(ref_interleaved);
-            for (int j = 0; j < audio_idx; j++) {
-                ace_audio_free(&audio[j]);
-            }
-            for (int j = 0; j < sbs; j++) {
-                ace_audio_free(&group_audio[j]);
-            }
-            json_error(res, 500, "Synth generation failed");
-            return;
-        }
-
-        for (int i = 0; i < sbs; i++) {
-            audio[audio_idx++] = group_audio[i];
-        }
-    }
+    AceRequest out;
+    int rc = ace_understand_generate(g_ctx_understand, src_interleaved, src_len, &ace_req, &out, server_cancel_job,
+                                     (void *) &job->cancel);
 
     // free
     if (!g_keep_loaded) {
-        ace_synth_free(g_ctx_synth);
-        g_ctx_synth = nullptr;
-        g_loaded_dit.clear();
-        g_loaded_lora.clear();
+        ace_understand_free(g_ctx_understand);
+        g_ctx_understand = nullptr;
+        ace_lm_free(g_ctx_lm);
+        g_ctx_lm = nullptr;
+        g_loaded_lm.clear();
+        g_loaded_und_dit.clear();
     }
-    lock.unlock();
     free(src_interleaved);
-    free(ref_interleaved);
-    int total_tracks = audio_idx;
 
-    // output format: ?wav=1 for WAV, default MP3
-    bool         output_wav = req.has_param("wav") && req.get_param_value("wav") == "1";
-    const char * mime       = output_wav ? "audio/wav" : "audio/mpeg";
-
-    // encode each track (peak normalize + encode)
-    std::vector<std::string> encoded(total_tracks);
-    for (int b = 0; b < total_tracks; b++) {
-        if (!audio[b].samples) {
-            continue;
-        }
-
-        audio_normalize(audio[b].samples, audio[b].n_samples * 2, ace_reqs[0].peak_clip);
-
-        if (output_wav) {
-            encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000);
-        } else {
-            encoded[b] = audio_encode_mp3(audio[b].samples, audio[b].n_samples, 48000, g_mp3_kbps, server_cancel,
-                                          (void *) &req.is_connection_closed);
-        }
-        ace_audio_free(&audio[b]);
-    }
-
-    // single track: raw audio body
-    if (total_tracks == 1) {
-        if (encoded[0].empty()) {
-            json_error(res, 500, "Audio encoding failed");
-            return;
-        }
-        res.set_content(encoded[0], mime);
+    if (rc != 0) {
+        job->status.store(job->cancel.load() ? 3 : 2);
         return;
     }
 
-    // multiple tracks: multipart/mixed, each part is raw audio
-    std::string boundary = "ace-batch-boundary";
-    std::string body;
-
-    for (int b = 0; b < total_tracks; b++) {
-        body += "--" + boundary + "\r\n";
-        body += "Content-Type: ";
-        body += mime;
-        body += "\r\n\r\n";
-        body += encoded[b];
-        body += "\r\n";
-    }
-    body += "--" + boundary + "--\r\n";
-
-    res.set_content(body, "multipart/mixed; boundary=" + boundary);
+    job->result_body = "[" + request_to_json(&out) + "]";
+    job->result_mime = "application/json";
+    job->status.store(1);
+    fprintf(stderr, "[Server] Job %s done (understand)\n", job->id.c_str());
 }
 
 // POST /understand
@@ -849,7 +1046,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
 //     part "audio":   WAV or MP3 file (required)
 //     part "request": JSON text (optional, for sampling params)
 //   application/json body        -> codes-only (audio_codes in JSON, skip VAE+FSQ)
-// returns: application/json AceRequest with metadata + lyrics + codes
+// returns: JSON {"id":"N"} immediately.
 static void handle_understand(const httplib::Request & req, httplib::Response & res) {
     if (g_registry.lm.empty() || g_registry.dit.empty() || g_registry.vae.empty()) {
         json_error(res, 501, "Understand requires LM, DiT and VAE models");
@@ -918,45 +1115,15 @@ static void handle_understand(const httplib::Request & req, httplib::Response & 
         }
     }
 
-    // try to acquire GPU. 503 instantly if busy.
-    std::unique_lock<std::mutex> lock(mtx_gpu, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        free(src_interleaved);
-        json_busy(res);
-        return;
-    }
+    auto job = job_create();
+    fprintf(stderr, "[Server] Job %s created (understand)\n", job->id.c_str());
 
-    // load (LM + tokenizer from selected DiT)
-    std::string lm_name  = resolve_name(g_registry.lm, sf.lm_model, g_loaded_lm);
-    std::string dit_name = resolve_name(g_registry.dit, sf.synth_model, g_loaded_dit);
-    if (!ensure_understand(lm_name, dit_name)) {
-        free(src_interleaved);
-        json_error(res, 500, "Failed to load understand pipeline");
-        return;
-    }
+    work_push([job, ace_req, sf, src_interleaved, src_len]() {
+        understand_worker(job, ace_req, sf, src_interleaved, src_len);
+    });
 
-    AceRequest out;
-    int        rc = ace_understand_generate(g_ctx_understand, src_interleaved, src_len, &ace_req, &out, server_cancel,
-                                            (void *) &req.is_connection_closed);
-
-    // free
-    if (!g_keep_loaded) {
-        ace_understand_free(g_ctx_understand);
-        g_ctx_understand = nullptr;
-        ace_lm_free(g_ctx_lm);
-        g_ctx_lm = nullptr;
-        g_loaded_lm.clear();
-        g_loaded_und_dit.clear();
-    }
-    lock.unlock();
-    free(src_interleaved);
-
-    if (rc != 0) {
-        json_error(res, 500, "Understand generation failed");
-        return;
-    }
-
-    res.set_content(request_to_json(&out), "application/json");
+    std::string body = "{\"id\":\"" + job->id + "\"}";
+    res.set_content(body, "application/json");
 }
 
 // GET /props
@@ -1236,6 +1403,52 @@ int main(int argc, char ** argv) {
     svr.Get("/props", handle_props);
     svr.Get("/logs", handle_logs);
 
+    // job system endpoints
+    svr.Get("/job", [](const httplib::Request & req, httplib::Response & res) {
+        if (!req.has_param("id")) {
+            json_error(res, 400, "Missing id parameter");
+            return;
+        }
+        auto job = job_find(req.get_param_value("id"));
+        if (!job) {
+            json_error(res, 404, "Job not found");
+            return;
+        }
+        // ?result=1: return result body
+        if (req.has_param("result") && req.get_param_value("result") == "1") {
+            if (job->status.load() != 1) {
+                json_error(res, 404, "Result not ready");
+                return;
+            }
+            res.set_content(job->result_body, job->result_mime);
+            return;
+        }
+        // default: return status JSON
+        std::string body = "{\"status\":\"";
+        body += job_status_str(job->status.load());
+        body += "\"}";
+        res.set_content(body, "application/json");
+    });
+    svr.Post("/job", [](const httplib::Request & req, httplib::Response & res) {
+        if (!req.has_param("id")) {
+            json_error(res, 400, "Missing id parameter");
+            return;
+        }
+        auto job = job_find(req.get_param_value("id"));
+        if (!job) {
+            json_error(res, 404, "Job not found");
+            return;
+        }
+        // ?cancel=1: cancel the job
+        if (req.has_param("cancel") && req.get_param_value("cancel") == "1") {
+            job->cancel.store(true);
+            fprintf(stderr, "[Server] Cancel requested for job %s\n", job->id.c_str());
+            res.set_content("{\"status\":\"cancelled\"}", "application/json");
+            return;
+        }
+        json_error(res, 400, "Unknown action");
+    });
+
     // embedded webui: gzipped single-page app (built by tools/webui/).
     // the browser decompresses transparently via Content-Encoding: gzip.
     // the .gz is committed to git so cloning + cmake + make gives a working UI.
@@ -1255,6 +1468,9 @@ int main(int argc, char ** argv) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
+    // start FIFO worker thread (processes all GPU jobs in order)
+    std::thread worker(worker_main);
+
     fprintf(stderr, "[Server] acestep.cpp %s\n", ACE_VERSION);
     fprintf(stderr, "[Server] Listening on %s:%d\n", host, port);
     fprintf(stderr, "[Server] Pipelines:%s%s%s\n", have_lm ? " /lm" : "", have_synth ? " /synth" : "",
@@ -1264,6 +1480,14 @@ int main(int argc, char ** argv) {
     if (!svr.listen(host, port)) {
         fprintf(stderr, "[Server] FATAL: cannot bind %s:%d\n", host, port);
     }
+
+    // stop worker thread (finishes current job, discards pending)
+    {
+        std::lock_guard<std::mutex> lock(mtx_work);
+        g_work_stop = true;
+    }
+    cv_work.notify_one();
+    worker.join();
 
     // cleanup (all _free functions handle NULL)
     fprintf(stderr, "[Server] Shutting down...\n");

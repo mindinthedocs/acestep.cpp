@@ -1,16 +1,20 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { RotateCcw, Download, FolderOpen } from '@lucide/svelte';
 	import { app, toast, setRequest } from '../lib/state.svelte.js';
 	import { rollDice } from '../lib/dice.js';
 	import {
-		lmGenerate,
-		lmInspire,
-		lmFormat,
-		synthGenerate,
-		synthGenerateWithAudio,
-		understandAudio
+		lmSubmit,
+		lmSubmitInspire,
+		lmSubmitFormat,
+		synthSubmit,
+		synthSubmitWithAudio,
+		pollJob,
+		jobResultJson,
+		jobResultBlobs,
+		cancelJob
 	} from '../lib/api.js';
-	import { putSong } from '../lib/db.js';
+	import { putSong, getAllSongs, saveJob, loadJob, loadJobId, clearJob } from '../lib/db.js';
 	import {
 		TASK_COVER,
 		TASK_COVER_NOFSQ,
@@ -22,7 +26,9 @@
 	} from '../lib/config.js';
 	import type { AceRequest, Song } from '../lib/types.js';
 
-	let busy = $state(false);
+	let busyLm = $state(false);
+	let busySynth = $state(false);
+	let busy = $derived(busyLm || busySynth);
 	let fileInput: HTMLInputElement;
 
 	let d = $derived(app.props?.default);
@@ -85,6 +91,84 @@
 		}
 	});
 
+	// cancel the active pipeline job
+	async function cancelPipeline() {
+		try {
+			if (busySynth) {
+				const synthId = loadJobId('synth');
+				if (synthId) await cancelJob(synthId);
+			} else if (busyLm) {
+				const lmId = loadJobId('lm');
+				if (lmId) await cancelJob(lmId);
+			}
+		} catch {}
+	}
+
+	// on mount: resume polling for any pending jobs in localStorage.
+	onMount(() => {
+		// LM job
+		const lmId = loadJobId('lm');
+		if (lmId) {
+			busyLm = true;
+			pollJob(lmId)
+				.then(() => jobResultJson(lmId))
+				.then((results) => {
+					clearJob('lm');
+					app.pendingRequests = results;
+					app.pendingIndex = 0;
+					if (results.length > 0) {
+						setRequest(results[0]);
+					}
+				})
+				.catch(() => {
+					clearJob('lm');
+				})
+				.finally(() => {
+					busyLm = false;
+				});
+		}
+
+		// synth job
+		const synthJob = loadJob('synth');
+		if (synthJob) {
+			busySynth = true;
+			pollJob(synthJob.id)
+				.then(() => jobResultBlobs(synthJob.id))
+				.then(async (blobs) => {
+					clearJob('synth');
+					const now = Date.now();
+					for (let i = blobs.length - 1; i >= 0; i--) {
+						const t = synthJob.tracks[i] || {
+							caption: '',
+							seed: 0,
+							duration: 0,
+							task: '',
+							request: { caption: '' }
+						};
+						const suffix = [synthJob.variant, t.task].filter((s) => s).join(' ');
+						const song: Song = {
+							name: suffix ? synthJob.name + ' (' + suffix + ')' : synthJob.name,
+							format: synthJob.format,
+							created: now + i,
+							caption: t.caption,
+							seed: t.seed,
+							duration: t.duration,
+							request: t.request,
+							audio: blobs[i]
+						};
+						await putSong(song);
+					}
+					app.songs = (await getAllSongs()).reverse();
+				})
+				.catch(() => {
+					clearJob('synth');
+				})
+				.finally(() => {
+					busySynth = false;
+				});
+		}
+	});
+
 	function reset() {
 		app.name = '';
 		setRequest({ caption: '' });
@@ -99,7 +183,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		const safe = app.name.replace(/[^a-zA-Z0-9 _-]/g, '') || 'request';
+		const safe = app.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'request';
 		a.download = `${safe}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
@@ -134,59 +218,36 @@
 			return;
 		}
 
-		// MP3 or WAV: send to /understand, populate form + create song card
+		// MP3 or WAV: create song card (audio only, use Scan for metadata)
 		if (ext === 'mp3' || ext === 'wav') {
-			importAudio(file, ext);
+			openAudio(file, ext);
 			return;
 		}
 
 		toast('Unsupported file type: ' + ext);
 	}
 
-	// import audio file via /understand endpoint.
-	// creates a song card with the original audio and fills the form
-	// with the returned metadata so it matches existing generated songs.
-	async function importAudio(file: File, ext: string) {
-		busy = true;
-		try {
-			toast('Understanding audio...', 4000, true);
-			const blob = new Blob([await file.arrayBuffer()], {
-				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
-			});
-			const result = await understandAudio(
-				blob,
-				app.request.lm_model as string,
-				app.request.synth_model as string
-			);
-
-			setRequest(result);
-			app.pendingRequests = [];
-			app.pendingIndex = 0;
-
-			// derive a clean name from the filename (strip extension)
-			const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
-			app.name = name;
-
-			// create a song card so the audio is playable immediately
-			const song: Song = {
-				name: name,
-				format: ext,
-				created: Date.now(),
-				caption: result.caption || '',
-				seed: Number(result.seed) || 0,
-				duration: Number(result.duration) || 0,
-				request: { ...result },
-				audio: blob
-			};
-			song.id = await putSong(song);
-			app.songs.unshift(song);
-
-			toast('Imported: ' + name, 4000, true);
-		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : String(e));
-		} finally {
-			busy = false;
-		}
+	// open audio file: create song card with audio only (no server call).
+	// use Scan on the card to analyze metadata.
+	async function openAudio(file: File, ext: string) {
+		const blob = new Blob([await file.arrayBuffer()], {
+			type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+		});
+		const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
+		const song: Song = {
+			name,
+			format: ext,
+			created: Date.now(),
+			caption: '',
+			seed: 0,
+			duration: 0,
+			request: { caption: '' },
+			audio: blob
+		};
+		song.id = await putSong(song);
+		app.songs.unshift(song);
+		app.name = name;
+		toast('Opened: ' + name, 4000, true);
 	}
 
 	// convert string or number to number, return undefined if empty/NaN
@@ -278,15 +339,17 @@
 		loadPending(next);
 	}
 
-	// shared: call an LM endpoint and load results into the form.
-	// LM enriches: caption, lyrics, bpm, duration, keyscale, timesignature, vocal_language, audio_codes.
-	// Everything else is preserved from the current UI state.
-	async function lmCall(fn: (req: AceRequest) => Promise<AceRequest[]>) {
-		busy = true;
+	// shared: call an LM endpoint via the job system and load results into the form.
+	async function lmCall(fn: (req: AceRequest) => Promise<string>) {
+		busyLm = true;
 		try {
 			const req = buildRequest();
 			req.audio_codes = '';
-			const results = await fn(req);
+			const jobId = await fn(req);
+			saveJob('lm', jobId);
+			await pollJob(jobId);
+			const results = await jobResultJson(jobId);
+			clearJob('lm');
 			if (results.length > 0) {
 				app.pendingRequests = results;
 				app.pendingIndex = 0;
@@ -311,7 +374,7 @@
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busyLm = false;
 		}
 	}
 
@@ -322,19 +385,19 @@
 
 	// Inspire: short caption -> fresh metadata + lyrics (no audio codes)
 	async function inspire() {
-		await lmCall(lmInspire);
+		await lmCall(lmSubmitInspire);
 	}
 
 	// Format: caption + lyrics -> metadata + lyrics (no audio codes)
 	async function format() {
-		await lmCall(lmFormat);
+		await lmCall(lmSubmitFormat);
 	}
 
 	// Compose: send form to LM, store all enriched results for batch synth.
 	// The LM preserves user-provided fields and fills the rest independently
 	// per batch item. Each result is a complete standalone request.
 	async function compose() {
-		await lmCall(lmGenerate);
+		await lmCall(lmSubmit);
 	}
 
 	// POST /synth: send pending requests (or current form) to the server.
@@ -342,7 +405,7 @@
 	// server groups by request and expands synth_batch_size for GPU batching.
 	// webui resolves seeds and predicts the expanded list for SongCard mapping.
 	async function synthesize() {
-		busy = true;
+		busySynth = true;
 		try {
 			savePending();
 			const reqs: AceRequest[] =
@@ -407,23 +470,41 @@
 			const srcSong = app.srcSongId != null ? app.songs.find((s) => s.id === app.srcSongId) : null;
 			const refSong = app.refSongId != null ? app.songs.find((s) => s.id === app.refSongId) : null;
 
-			const blobs =
-				srcSong || refSong
-					? await synthGenerateWithAudio(
-							toSend,
-							srcSong?.audio ?? null,
-							refSong?.audio ?? null,
-							app.format
-						)
-					: await synthGenerate(toSend, app.format);
-			const now = Date.now();
-			const baseName = app.name || 'Untitled';
-
 			// extract DiT variant from model filename
 			// "acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo"
 			const model = String(app.request.synth_model || '');
 			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
 			const variant = vm ? vm[1] : '';
+			const baseName = app.name || 'Untitled';
+
+			// submit job, poll until done, fetch result
+			const jobId =
+				srcSong || refSong
+					? await synthSubmitWithAudio(
+							toSend,
+							srcSong?.audio ?? null,
+							refSong?.audio ?? null,
+							app.format
+						)
+					: await synthSubmit(toSend, app.format);
+			saveJob('synth', {
+				id: jobId,
+				name: baseName,
+				format: app.format,
+				variant,
+				tracks: expanded.map((r) => ({
+					caption: r.caption || '',
+					seed: r.seed || 0,
+					duration: r.duration || 0,
+					task: r.task_type || 'text2music',
+					request: r
+				}))
+			});
+			await pollJob(jobId);
+			const blobs = await jobResultBlobs(jobId);
+			clearJob('synth');
+
+			const now = Date.now();
 
 			for (let i = blobs.length - 1; i >= 0; i--) {
 				const r = expanded[i];
@@ -447,7 +528,7 @@
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busySynth = false;
 		}
 	}
 
@@ -643,7 +724,10 @@
 		</div>
 	</div>
 
-	<button type="button" disabled={busy} onclick={compose}>Compose</button>
+	<div class="action-row">
+		<button type="button" disabled={busy} onclick={compose}>Compose</button>
+		<button type="button" disabled={!busyLm} onclick={cancelPipeline}>Cancel</button>
+	</div>
 
 	<details open>
 		<summary>Task</summary>
@@ -782,7 +866,10 @@
 		</div>
 	</div>
 
-	<button type="button" disabled={busy} onclick={synthesize}>Synthesize</button>
+	<div class="action-row">
+		<button type="button" disabled={busy} onclick={synthesize}>Synthesize</button>
+		<button type="button" disabled={!busySynth} onclick={cancelPipeline}>Cancel</button>
+	</div>
 </form>
 
 <style>
@@ -982,6 +1069,13 @@
 		gap: 0.5rem;
 	}
 	.lm-row button {
+		flex: 1;
+	}
+	.action-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.action-row button {
 		flex: 1;
 	}
 </style>

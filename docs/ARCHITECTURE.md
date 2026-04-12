@@ -736,13 +736,19 @@ in one GPU pass.
 ## ace-server reference
 
 HTTP server exposing the same pipelines as `ace-lm`, `ace-synth`, and
-`ace-understand` over three POST endpoints. One binary, one port.
+`ace-understand`. One binary, one port.
+
+POST /lm, POST /synth, and POST /understand are all **asynchronous**: they
+return a job ID immediately, push the request to a FIFO queue, and the single
+worker thread processes jobs in order. Clients poll GET /job?id=N for status
+and fetch results with GET /job?id=N&result=1.
+Cancel: POST /job?id=N&cancel=1 stops a specific job.
 
 `--models` scans a directory for GGUF files and classifies each by its
 `general.architecture` metadata into LM, Text-Enc, DiT, and VAE buckets.
 Each request loads the model, executes, and frees it. With `--keep-loaded`,
-models persist in VRAM and are reused across requests. A single GPU mutex
-serializes all endpoint access (503 if busy).
+models persist in VRAM and are reused across requests. GPU access is
+serialized by the single worker thread (no mutex needed).
 
 | Pipeline | GGUF architectures needed | Enables | VRAM (approx) |
 |:---------|:--------------------------|:--------|:--------------|
@@ -797,34 +803,51 @@ Examples:
 
 ### Endpoints
 
-**POST /lm** accepts an AceRequest JSON body, runs the LM pipeline, and
-returns a JSON array of enriched requests (`Content-Type: application/json`).
-`lm_batch_size` in the input controls the array length (clamped to `1..max_batch`).
-`lm_model` in the JSON selects the LM to load.
-Requires at least one `acestep-lm` GGUF in `--models`.
+```
+POST /lm                        Submit LM generation, returns job ID
+POST /lm?mode=inspire           Submit inspire generation, returns job ID
+POST /lm?mode=format            Submit format generation, returns job ID
+  body: application/json AceRequest
+  response: {"id":"1"}
 
-**POST /synth** runs the synth pipeline and returns audio (MP3 or WAV via `?wav=1`).
-Three input modes: a JSON array `[{req0}, {req1}]` for batch generation,
-a single `application/json` object for one track, or `multipart/form-data`
-with a `request` part (JSON) and an `audio` part (WAV or MP3) for
-cover/repaint/lego/extract/complete. `synth_batch_size` in each request duplicates it for
-multiple DiT variations (e.g. multipart with `synth_batch_size=3` produces
-3 tracks from the same audio). Total track count (after expansion) is
-clamped to 9.
-Response format depends on batch size:
-batch=1: raw audio body.
-batch>1: `Content-Type: multipart/mixed`, each part is raw audio.
-Metadata (seed, duration, etc) is already in the request JSON from /lm.
-`synth_model`, `lora`, `lora_scale` in the JSON select the DiT and LoRA to load.
-Requires `acestep-text-enc` + `acestep-dit` + `acestep-vae` GGUFs in `--models`.
+POST /synth                     Submit synth generation (MP3), returns job ID
+POST /synth?wav=1               Submit synth generation (WAV), returns job ID
+  body: application/json AceRequest or [AceRequest, ...]
+  body: multipart/form-data (request + audio + ref_audio)
+  response: {"id":"2"}
 
-**POST /understand** runs the reverse pipeline (audio -> metadata + lyrics + codes)
-and returns an AceRequest JSON. Two input modes: `multipart/form-data` with an
-`audio` part (required) and optional `request` part (sampling params), or plain
-`application/json` with `audio_codes` for codes-only mode (skip VAE + FSQ).
-Audio input mode requires LM + DiT + VAE. Codes-only mode requires just LM.
+POST /understand                Submit understand, returns job ID
+  body: multipart/form-data (audio + optional request)
+  body: application/json (codes only mode)
+  response: {"id":"3"}
 
-**GET /health** returns `{"status":"ok"}`.
+GET  /job?id=N                  Poll job status
+  response: {"status":"running|done|failed|cancelled"}
+
+GET  /job?id=N&result=1         Fetch job result
+  LM/understand: application/json [AceRequest, ...]
+  synth jobs:    audio/mpeg or audio/wav (single track)
+  synth jobs:    multipart/mixed (batch, each part is raw audio)
+
+POST /job?id=N&cancel=1         Cancel a specific job
+  response: {"status":"cancelled"}
+
+GET  /health                    Server health check
+  response: {"status":"ok"}
+
+GET  /props                     Server config, models, presets, defaults
+  response: application/json
+
+GET  /logs                      SSE stream of server stderr
+  response: text/event-stream
+
+GET  /                          Embedded WebUI (gzipped HTML)
+```
+
+`lm_model`, `synth_model`, `lora`, `lora_scale` fields in the JSON body
+select which model and LoRA to load. `synth_batch_size` duplicates a
+request for multiple DiT variations (clamped to 9). Error responses are
+JSON: `{"error":"message"}` with 400, 500, 501, or 503 status.
 
 **GET /props** returns available models, server configuration, and the
 default AceRequest (source of truth for webui dropdowns and placeholders):
@@ -833,7 +856,7 @@ default AceRequest (source of truth for webui dropdowns and placeholders):
   "models": {
     "lm": ["acestep-5Hz-lm-0.6B-Q8_0.gguf", "acestep-5Hz-lm-4B-Q8_0.gguf"],
     "embedding": ["Qwen3-Embedding-0.6B-Q8_0.gguf"],
-    "dit": ["acestep-v15-turbo-Q8_0.gguf", "acestep-v15-xl-turbo-Q8_0.gguf", "acestep-v15-base-Q8_0.gguf"],
+    "dit": ["acestep-v15-turbo-Q8_0.gguf", "acestep-v15-xl-turbo-Q8_0.gguf"],
     "vae": ["vae-BF16.gguf"]
   },
   "loras": [],
@@ -842,22 +865,23 @@ default AceRequest (source of truth for webui dropdowns and placeholders):
 }
 ```
 
-Error responses are JSON: `{"error":"message"}` with 400, 500, 501, or
-503 status. 503 includes a `Retry-After` header.
-
 ### Concurrency
 
-A single GPU mutex serializes all endpoint access. Each handler uses
-`try_lock`: if the GPU is busy, the client gets an instant 503 with
-`Retry-After`. No request ever blocks waiting for another to finish.
+A single GPU mutex serializes all compute. LM and synth workers run in
+detached threads and block on the mutex until the GPU is free. Understand
+uses try_lock and returns 503 instantly if the GPU is busy.
+
+Completed jobs are stored in memory (LRU, 10 entries). A disconnected
+client can poll and fetch the result after reconnecting. Each job has
+its own cancel flag so multi-user cancel is safe.
 
 By default, each request loads its model, executes, and frees it.
 With `--keep-loaded`, models persist in VRAM and are reused. If the
 requested model differs from the one currently loaded, the old model
 is freed and the new one is loaded before processing.
 
-Request bodies are limited to 120 MB (enough for a 10-minute WAV upload
-via multipart).
+Request bodies are limited to 256 MB (source + reference audio, up to
+10 minutes WAV each).
 
 ## neural-codec reference
 

@@ -1,105 +1,128 @@
 import type { AceRequest, AceProps } from './types.js';
-import { FETCH_TIMEOUT_MS } from './config.js';
+import { FETCH_TIMEOUT_MS, JOB_POLL_MS } from './config.js';
 
-// POST lm: partial request -> enriched request(s)
-export async function lmGenerate(req: AceRequest): Promise<AceRequest[]> {
-	const res = await fetch('lm', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(req)
-	});
+// shared: submit a request and return the job ID
+async function submitJob(url: string, init: RequestInit): Promise<string> {
+	const res = await fetch(url, init);
 	if (!res.ok) {
 		const err = await res.json().catch(() => ({ error: res.statusText }));
 		throw new Error(`${res.status} ${err.error || res.statusText}`);
 	}
-	return res.json();
+	const data = await res.json();
+	return data.id;
 }
 
-// POST lm?mode=inspire: short caption -> metadata + lyrics (no codes)
-export async function lmInspire(req: AceRequest): Promise<AceRequest[]> {
-	const res = await fetch('lm?mode=inspire', {
+// POST /lm: submit LM request, returns job ID
+export function lmSubmit(req: AceRequest): Promise<string> {
+	return submitJob('lm', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(req)
 	});
-	if (!res.ok) {
-		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(`${res.status} ${err.error || res.statusText}`);
-	}
-	return res.json();
 }
 
-// POST lm?mode=format: caption + lyrics -> metadata + lyrics (no codes)
-export async function lmFormat(req: AceRequest): Promise<AceRequest[]> {
-	const res = await fetch('lm?mode=format', {
+// POST /lm?mode=inspire: submit inspire request, returns job ID
+export function lmSubmitInspire(req: AceRequest): Promise<string> {
+	return submitJob('lm?mode=inspire', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(req)
 	});
-	if (!res.ok) {
-		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(`${res.status} ${err.error || res.statusText}`);
-	}
-	return res.json();
 }
 
-// POST synth[?wav=1]: request(s) -> audio blob(s)
-// Metadata (seed, duration, etc) is already in the request JSON from /lm.
-export async function synthGenerate(reqs: AceRequest[], format: string): Promise<Blob[]> {
+// POST /lm?mode=format: submit format request, returns job ID
+export function lmSubmitFormat(req: AceRequest): Promise<string> {
+	return submitJob('lm?mode=format', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(req)
+	});
+}
+
+// POST /synth: submit synth request, returns job ID
+export function synthSubmit(reqs: AceRequest[], format: string): Promise<string> {
 	const url = format === 'wav' ? 'synth?wav=1' : 'synth';
 	const body = reqs.length === 1 ? JSON.stringify(reqs[0]) : JSON.stringify(reqs);
-	const res = await fetch(url, {
+	return submitJob(url, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body
 	});
-	if (!res.ok) {
-		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(`${res.status} ${err.error || res.statusText}`);
-	}
-
-	const ct = res.headers.get('Content-Type') || '';
-
-	// single track: raw audio body
-	if (!ct.startsWith('multipart/')) {
-		return [await res.blob()];
-	}
-
-	// batch: multipart/mixed, each part is raw audio
-	const match = ct.match(/boundary=([^\s;]+)/);
-	if (!match) throw new Error('Missing boundary in multipart response');
-	const mime = format === 'wav' ? 'audio/wav' : 'audio/mpeg';
-	return parseMultipart(new Uint8Array(await res.arrayBuffer()), match[1], mime);
 }
 
-// POST synth (multipart): request(s) + source/reference audio -> audio blob(s).
-// src_audio = source content (cover/lego/repaint), ref_audio = timbre reference.
-export async function synthGenerateWithAudio(
+// POST /synth (multipart): submit synth request with audio files, returns job ID
+export function synthSubmitWithAudio(
 	reqs: AceRequest[],
 	srcAudio: Blob | null,
 	refAudio: Blob | null,
 	format: string
-): Promise<Blob[]> {
+): Promise<string> {
 	const url = format === 'wav' ? 'synth?wav=1' : 'synth';
 	const body = reqs.length === 1 ? JSON.stringify(reqs[0]) : JSON.stringify(reqs);
 	const form = new FormData();
 	form.append('request', new Blob([body], { type: 'application/json' }), 'request.json');
 	if (srcAudio) form.append('audio', srcAudio, 'src.audio');
 	if (refAudio) form.append('ref_audio', refAudio, 'ref.audio');
-	const res = await fetch(url, { method: 'POST', body: form });
-	if (!res.ok) {
-		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(`${res.status} ${err.error || res.statusText}`);
-	}
+	return submitJob(url, { method: 'POST', body: form });
+}
 
+// GET /job?id=X: poll job status
+export async function jobStatus(id: string): Promise<string> {
+	const res = await fetch(`job?id=${encodeURIComponent(id)}`, {
+		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+	});
+	if (!res.ok) throw new Error(`${res.status} Job not found`);
+	const data = await res.json();
+	return data.status;
+}
+
+// poll until done, throws on failure or cancel.
+// no timeout: long jobs (XL synth) can take 10+ minutes.
+// the user cancels via the Cancel button if needed.
+// retries on network errors (TypeError) and timeouts (DOMException).
+// propagates HTTP errors (404 = job evicted, server restarted).
+export async function pollJob(id: string): Promise<void> {
+	for (;;) {
+		try {
+			const status = await jobStatus(id);
+			if (status === 'done') return;
+			if (status === 'failed') throw new Error('Generation failed');
+			if (status === 'cancelled') throw new Error('Cancelled');
+		} catch (e) {
+			if (e instanceof TypeError || e instanceof DOMException) {
+				// network down or timeout: retry next cycle
+			} else {
+				throw e;
+			}
+		}
+		await new Promise((r) => setTimeout(r, JOB_POLL_MS));
+	}
+}
+
+// GET /job?id=X&result=1: fetch result as JSON array (for LM jobs)
+export async function jobResultJson(id: string): Promise<AceRequest[]> {
+	const res = await fetch(`job?id=${encodeURIComponent(id)}&result=1`);
+	if (!res.ok) throw new Error(`${res.status} Result not ready`);
+	return res.json();
+}
+
+// GET /job?id=X&result=1: fetch result as audio blobs (for synth jobs)
+export async function jobResultBlobs(id: string): Promise<Blob[]> {
+	const res = await fetch(`job?id=${encodeURIComponent(id)}&result=1`);
+	if (!res.ok) throw new Error(`${res.status} Result not ready`);
 	const ct = res.headers.get('Content-Type') || '';
 	if (!ct.startsWith('multipart/')) {
 		return [await res.blob()];
 	}
 	const match = ct.match(/boundary=([^\s;]+)/);
 	if (!match) throw new Error('Missing boundary in multipart response');
-	const mime = format === 'wav' ? 'audio/wav' : 'audio/mpeg';
+	const mime = ct.includes('wav') ? 'audio/wav' : 'audio/mpeg';
 	return parseMultipart(new Uint8Array(await res.arrayBuffer()), match[1], mime);
+}
+
+// POST /job?id=X&cancel=1: cancel a specific job
+export async function cancelJob(id: string): Promise<void> {
+	await fetch(`job?id=${encodeURIComponent(id)}&cancel=1`, { method: 'POST' });
 }
 
 // parse multipart/mixed binary response into Blob[].
@@ -144,13 +167,12 @@ function parseMultipart(buf: Uint8Array, boundary: string, mime: string): Blob[]
 	return results;
 }
 
-// POST /understand: audio file -> AceRequest with metadata + lyrics + codes.
-// sends multipart/form-data with an "audio" part and optional "request" JSON.
-export async function understandAudio(
+// POST /understand (multipart): submit understand request, returns job ID
+export function understandSubmit(
 	blob: Blob,
 	lmModel?: string,
 	synthModel?: string
-): Promise<AceRequest> {
+): Promise<string> {
 	const form = new FormData();
 	form.append('audio', blob, 'input.audio');
 	const fields: Record<string, string> = {};
@@ -163,18 +185,10 @@ export async function understandAudio(
 			'request.json'
 		);
 	}
-	const res = await fetch('understand', {
-		method: 'POST',
-		body: form
-	});
-	if (!res.ok) {
-		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(`${res.status} ${err.error || res.statusText}`);
-	}
-	return res.json();
+	return submitJob('understand', { method: 'POST', body: form });
 }
 
-// GET props: server config, pipeline status, default request (2s timeout)
+// GET /props: server config (2s timeout)
 export async function props(): Promise<AceProps> {
 	const res = await fetch('props', {
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)

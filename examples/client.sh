@@ -4,12 +4,33 @@
 
 set -eu
 
-curl -sf http://127.0.0.1:8085/lm \
-    -H "Content-Type: application/json" \
-    -d @full-sft.json \
-| jq '.[0]' > server-lm0.json
+HOST="http://127.0.0.1:8085"
 
-curl -sf http://127.0.0.1:8085/synth \
+# poll a job until done, exit 1 on failure
+wait_job() {
+    local id="$1"
+    while true; do
+        status=$(curl -sf "${HOST}/job?id=${id}" | jq -r '.status')
+        case "$status" in
+            done) return 0 ;;
+            failed|cancelled) echo "Job ${id}: ${status}"; return 1 ;;
+        esac
+        sleep 2
+    done
+}
+
+# LM: submit, poll, fetch result
+LM_ID=$(curl -sf "${HOST}/lm" \
     -H "Content-Type: application/json" \
-    -d @server-lm0.json \
-    -o server0.mp3
+    -d @full-sft.json | jq -r '.id')
+echo "LM job: ${LM_ID}"
+wait_job "${LM_ID}"
+curl -sf "${HOST}/job?id=${LM_ID}&result=1" | jq '.[0]' > server-lm0.json
+
+# synth: submit, poll, fetch result
+SYNTH_ID=$(curl -sf "${HOST}/synth" \
+    -H "Content-Type: application/json" \
+    -d @server-lm0.json | jq -r '.id')
+echo "Synth job: ${SYNTH_ID}"
+wait_job "${SYNTH_ID}"
+curl -sf "${HOST}/job?id=${SYNTH_ID}&result=1" -o server0.mp3
