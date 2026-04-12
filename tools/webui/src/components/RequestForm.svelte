@@ -578,7 +578,10 @@
 		<div class="details-body">
 			<div class="model-row">
 				<span class="model-label">LM</span>
-				<select bind:value={app.request.lm_model}>
+				<select
+					bind:value={app.request.lm_model}
+					title="Language Model for Inspire, Format and Compose. Scanned from --models directory at startup."
+				>
 					{#each lmModels as name}
 						<option value={name}>{name}</option>
 					{/each}
@@ -586,7 +589,10 @@
 			</div>
 			<div class="model-row">
 				<span class="model-label">DiT</span>
-				<select bind:value={app.request.synth_model}>
+				<select
+					bind:value={app.request.synth_model}
+					title="Diffusion Transformer for Synthesize. Scanned from --models directory at startup."
+				>
 					{#each ditModels as name}
 						<option value={name}>{name}</option>
 					{/each}
@@ -594,7 +600,10 @@
 			</div>
 			<div class="model-row">
 				<span class="model-label">LoRA</span>
-				<select bind:value={app.request.lora}>
+				<select
+					bind:value={app.request.lora}
+					title="LoRA adapter merged into DiT at load time. Must match the exact DiT it was trained on. Scanned from --loras directory. ComfyUI format: single .safetensors file. PEFT format: directory with adapter_model.safetensors and adapter_config.json."
+				>
 					<option value="">Disabled</option>
 					{#if loraStale}
 						<option value={app.request.lora} disabled>{app.request.lora}</option>
@@ -608,6 +617,7 @@
 					class="batch-input"
 					placeholder="1.0"
 					bind:value={app.request.lora_scale}
+					title="LoRA scale factor. Lower if you hear structured noise or artifacts. Raise for stronger effect."
 				/>
 			</div>
 		</div>
@@ -619,7 +629,7 @@
 	<div class="section-title">Caption</div>
 	<textarea
 		rows="8"
-		placeholder="Upbeat pop rock with driving guitars... (the only required field, may be enriched by the LM)"
+		placeholder="Upbeat pop rock with driving guitars... (the only required field, enriched by the LM unless all prompt fields are filled.)"
 		bind:value={app.request.caption}
 	></textarea>
 
@@ -751,6 +761,7 @@
 			min="1"
 			max={app.props?.cli?.max_batch || 9}
 			bind:value={app.request.lm_batch_size}
+			title="Number of LM variations per Compose. Server must be started with --max-batch N (default 1). Higher values use more VRAM for the KV cache."
 		/>
 		<span class="spacer"></span>
 		<span class="row-label">Pending</span>
