@@ -309,6 +309,11 @@
 		if (audio_cover_strength != null) out.audio_cover_strength = audio_cover_strength;
 		const cover_noise_strength = num(r.cover_noise_strength);
 		if (cover_noise_strength != null) out.cover_noise_strength = cover_noise_strength;
+		if (typeof r.savgol_enabled === 'boolean') out.savgol_enabled = r.savgol_enabled;
+		const savgol_window = num(r.savgol_window);
+		if (savgol_window != null) out.savgol_window = savgol_window;
+		const savgol_poly = num(r.savgol_poly);
+		if (savgol_poly != null) out.savgol_poly = savgol_poly;
 		const lm_batch_size = num(r.lm_batch_size);
 		if (lm_batch_size != null && lm_batch_size >= 1) out.lm_batch_size = lm_batch_size;
 		const synth_batch_size = num(r.synth_batch_size);
@@ -343,6 +348,9 @@
 			seed: app.request.seed,
 			audio_cover_strength: app.request.audio_cover_strength,
 			cover_noise_strength: app.request.cover_noise_strength,
+			savgol_enabled: app.request.savgol_enabled,
+			savgol_window: app.request.savgol_window,
+			savgol_poly: app.request.savgol_poly,
 			synth_batch_size: app.request.synth_batch_size
 		});
 		app.pendingIndex = index;
@@ -378,6 +386,9 @@
 					seed: app.request.seed,
 					audio_cover_strength: app.request.audio_cover_strength,
 					cover_noise_strength: app.request.cover_noise_strength,
+					savgol_enabled: app.request.savgol_enabled,
+					savgol_window: app.request.savgol_window,
+					savgol_poly: app.request.savgol_poly,
 					repaint_strength: app.request.repaint_strength,
 					synth_batch_size: app.request.synth_batch_size,
 					lm_batch_size: app.request.lm_batch_size,
@@ -443,6 +454,12 @@
 			if (acs != null) synthParams.audio_cover_strength = acs;
 			const cns = num(app.request.cover_noise_strength);
 			if (cns != null) synthParams.cover_noise_strength = cns;
+			if (typeof app.request.savgol_enabled === 'boolean')
+				synthParams.savgol_enabled = app.request.savgol_enabled;
+			const sgw = num(app.request.savgol_window);
+			if (sgw != null) synthParams.savgol_window = sgw;
+			const sgp = num(app.request.savgol_poly);
+			if (sgp != null) synthParams.savgol_poly = sgp;
 			const rps = num(app.request.repaint_strength);
 			if (rps != null) synthParams.repaint_strength = rps;
 			// task_type and track from form
@@ -563,6 +580,9 @@
 		app.request.shift = undefined;
 		app.request.audio_cover_strength = undefined;
 		app.request.cover_noise_strength = undefined;
+		app.request.savgol_enabled = undefined;
+		app.request.savgol_window = undefined;
+		app.request.savgol_poly = undefined;
 		app.request.repaint_strength = undefined;
 		app.request.infer_method = '';
 		app.request.seed = undefined;
@@ -937,6 +957,28 @@
 					>Seed <input type="text" placeholder={ph(d?.seed)} bind:value={app.request.seed} /></label
 				>
 			</div>
+			{#if taskType === TASK_COVER_NOFSQ}
+				<div class="meta-grid savgol-grid">
+					<label class="savgol-enable">
+						<input type="checkbox" bind:checked={app.request.savgol_enabled} />
+						Enable Savitzky–Golay smoothing
+					</label>
+					<label
+						>Window (odd, 3..31) <input
+							type="text"
+							placeholder={ph(d?.savgol_window)}
+							bind:value={app.request.savgol_window}
+						/></label
+					>
+					<label
+						>Polynomial order (1..W−2) <input
+							type="text"
+							placeholder={ph(d?.savgol_poly)}
+							bind:value={app.request.savgol_poly}
+						/></label
+					>
+				</div>
+			{/if}
 		</div>
 	</details>
 

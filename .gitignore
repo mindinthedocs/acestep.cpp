@@ -11,3 +11,8 @@ loras/*.safetensors
 __pycache__/
 node_modules/
 tools/webui/dist/
+
+# macOS
+.DS_Store
+
+tests/test-savgol

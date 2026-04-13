@@ -46,6 +46,11 @@ struct AceRequest {
     float audio_cover_strength;  // 1.0 (0-1, fraction of DiT steps using source context)
     float cover_noise_strength;  // 0.0 (0-1, how close to source: 0=pure noise, 1=source)
 
+    // cover-nofsq: Savitzky-Golay 1D smoothing of source latents (between VAE encode and DiT input)
+    bool savgol_enabled;  // false
+    int  savgol_window;   // 7 (odd, 3..31)
+    int  savgol_poly;     // 2 (1..W-2)
+
     // repaint mode (requires source audio)
     // Both -1 = no repaint (plain cover). One or both >= 0 activates repaint.
     // -1 on start means 0s, -1 on end means source duration.

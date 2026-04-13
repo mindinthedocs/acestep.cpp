@@ -122,6 +122,9 @@ int ops_encode_src(AceSynth * ctx, const float * src_audio, int src_len, SynthSt
 // FSQ roundtrip on cover_latents (cover mode only).
 void ops_fsq_roundtrip(AceSynth * ctx, SynthState & s);
 
+// Savitzky-Golay 1D smoothing of source latents (cover-nofsq only). In-place on s.cover_latents.
+void ops_filter_source_latents(AceSynth * ctx, SynthState & s);
+
 // Resolve shared DiT params (steps, guidance, shift) and scan audio_codes.
 int ops_resolve_params(AceSynth * ctx, const AceRequest * reqs, int batch_n, SynthState & s);
 

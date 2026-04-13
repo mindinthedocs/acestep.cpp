@@ -23,6 +23,9 @@ export interface AceRequest {
 	shift?: number;
 	audio_cover_strength?: number;
 	cover_noise_strength?: number;
+	savgol_enabled?: boolean;
+	savgol_window?: number;
+	savgol_poly?: number;
 	repainting_start?: number;
 	repainting_end?: number;
 	repaint_strength?: number;

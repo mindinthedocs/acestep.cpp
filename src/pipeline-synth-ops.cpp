@@ -16,10 +16,12 @@
 #include "pipeline-synth.h"
 #include "qwen3-enc.h"
 #include "request.h"
+#include "savgol.h"
 #include "timer.h"
 #include "vae-enc.h"
 #include "vae.h"
 
+#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -112,6 +114,56 @@ void ops_fsq_roundtrip(AceSynth * ctx, SynthState & s) {
             }
         }
     }
+}
+
+// ops_filter_source_latents
+void ops_filter_source_latents(AceSynth * /*ctx*/, SynthState & s) {
+    // Savitzky-Golay 1D smoothing of clean VAE latents (cover-nofsq only).
+    // Runs after ops_encode_src and before ops_build_context / ops_init_noise_and_repaint,
+    // so both the DiT context and cover_noise_strength blend consume filtered latents.
+    if (!s.rr.savgol_enabled) {
+        fprintf(stderr, "[SG-Filter] skip: disabled\n");
+        return;
+    }
+    const int Oc      = s.Oc > 0 ? s.Oc : 64;
+    assert(s.cover_latents.size() % (size_t) Oc == 0);
+    const int T_cover = (int) (s.cover_latents.size() / (size_t) Oc);
+    if (T_cover < 3) {
+        fprintf(stderr, "[SG-Filter] skip: T_cover=%d < 3\n", T_cover);
+        return;
+    }
+
+    // Clamp window: odd, in [3, min(31, largest-odd <= T_cover-1)].
+    int W = s.rr.savgol_window;
+    W |= 1;                       // force odd
+    int W_max_by_T = T_cover - 1; // leave at least one neighbour
+    if ((W_max_by_T & 1) == 0) {
+        W_max_by_T -= 1;          // round down to odd
+    }
+    int W_max = W_max_by_T < 31 ? W_max_by_T : 31;
+    if (W_max < 3) {
+        fprintf(stderr, "[SG-Filter] skip: T_cover=%d too small for any odd W>=3\n", T_cover);
+        return;
+    }
+    if (W < 3) {
+        W = 3;
+    }
+    if (W > W_max) {
+        W = W_max;
+    }
+
+    // Clamp poly: [1, W-2].
+    int P = s.rr.savgol_poly;
+    if (P < 1) {
+        P = 1;
+    }
+    if (P > W - 2) {
+        P = W - 2;
+    }
+
+    s.timer.reset();
+    savgol_apply_1d(s.cover_latents.data(), T_cover, Oc, s.cover_latents.data(), W, P);
+    fprintf(stderr, "[SG-Filter] W=%d P=%d T=%d C=%d ms=%.2f\n", W, P, T_cover, Oc, s.timer.ms());
 }
 
 // ops_resolve_params

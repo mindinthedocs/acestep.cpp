@@ -316,6 +316,7 @@ int ace_synth_generate(AceSynth *         ctx,
             // pass ref_audio = src_audio for best results.
             s.use_source_context = true;
             s.instruction_str    = DIT_INSTR_COVER;
+            ops_filter_source_latents(ctx, s);
         } else if (s.task == TASK_REPAINT) {
             s.use_source_context = true;
             s.instruction_str    = DIT_INSTR_REPAINT;

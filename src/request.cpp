@@ -38,6 +38,9 @@ void request_init(AceRequest * r) {
     r->shift                = 0.0f;  // 0 = auto (turbo: 3.0, base/sft: 1.0)
     r->audio_cover_strength = 1.0f;
     r->cover_noise_strength = 0.0f;
+    r->savgol_enabled       = false;
+    r->savgol_window        = 7;
+    r->savgol_poly          = 2;
     r->repainting_start     = -1.0f;
     r->repainting_end       = -1.0f;
     r->repaint_strength     = 0.5f;
@@ -133,6 +136,12 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "cover_noise_strength")) && yyjson_is_num(v)) {
         r->cover_noise_strength = (float) yyjson_get_num(v);
     }
+    if ((v = yyjson_obj_get(obj, "savgol_window")) && yyjson_is_num(v)) {
+        r->savgol_window = (int) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "savgol_poly")) && yyjson_is_num(v)) {
+        r->savgol_poly = (int) yyjson_get_num(v);
+    }
     if ((v = yyjson_obj_get(obj, "repainting_start")) && yyjson_is_num(v)) {
         r->repainting_start = (float) yyjson_get_num(v);
     }
@@ -147,6 +156,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
 
     // bool
+    if ((v = yyjson_obj_get(obj, "savgol_enabled")) && yyjson_is_bool(v)) {
+        r->savgol_enabled = yyjson_get_bool(v);
+    }
     if ((v = yyjson_obj_get(obj, "use_cot_caption"))) {
         if (yyjson_is_bool(v)) {
             r->use_cot_caption = yyjson_get_bool(v);
@@ -346,6 +358,15 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->cover_noise_strength != def.cover_noise_strength) {
         yyjson_mut_obj_add_real(doc, root, "cover_noise_strength", r->cover_noise_strength);
     }
+    if (all || r->savgol_enabled != def.savgol_enabled) {
+        yyjson_mut_obj_add_bool(doc, root, "savgol_enabled", r->savgol_enabled);
+    }
+    if (all || r->savgol_window != def.savgol_window) {
+        yyjson_mut_obj_add_int(doc, root, "savgol_window", r->savgol_window);
+    }
+    if (all || r->savgol_poly != def.savgol_poly) {
+        yyjson_mut_obj_add_int(doc, root, "savgol_poly", r->savgol_poly);
+    }
     if (all || r->repainting_start != def.repainting_start) {
         yyjson_mut_obj_add_real(doc, root, "repainting_start", r->repainting_start);
     }
@@ -413,6 +434,8 @@ void request_dump(const AceRequest * r, FILE * f) {
         fprintf(f, "[Request] cover: strength=%.2f noise_strength=%.2f\n", r->audio_cover_strength,
                 r->cover_noise_strength);
     }
+    fprintf(f, "[Request] savgol: enabled=%d window=%d poly=%d\n", r->savgol_enabled ? 1 : 0, r->savgol_window,
+            r->savgol_poly);
     if (r->repainting_start >= 0.0f || r->repainting_end >= 0.0f) {
         fprintf(f, "[Request] repaint: start=%.1f end=%.1f strength=%.2f\n", r->repainting_start, r->repainting_end,
                 r->repaint_strength);
