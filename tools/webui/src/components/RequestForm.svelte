@@ -875,22 +875,16 @@
 			bind:value={app.request.peak_clip}
 			title="Percentile peak normalization to 0 dB. 0 = no clipping (100th percentile). 10 = default (99.999%, clips ~58 samples / 1.2 ms). 999 = aggressive (99.9%, clips ~5760 samples / 120 ms)."
 		/>
-	</div>
-
-	<div class="model-row">
-		<span class="model-label">Out</span>
-		<label class="radio-label">
-			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
-		</label>
-		<label class="radio-label">
-			<input type="radio" name="format" value="wav16" bind:group={app.format} /> WAV16
-		</label>
-		<label class="radio-label">
-			<input type="radio" name="format" value="wav24" bind:group={app.format} /> WAV24
-		</label>
-		<label class="radio-label">
-			<input type="radio" name="format" value="wav32" bind:group={app.format} /> WAV32 (raw float)
-		</label>
+		<select
+			bind:value={app.format}
+			title="Output audio format. wav32 outputs raw IEEE float without normalization."
+			style="min-width: 6rem"
+		>
+			<option value="mp3">MP3</option>
+			<option value="wav16">WAV16</option>
+			<option value="wav24">WAV24</option>
+			<option value="wav32">WAV32</option>
+		</select>
 	</div>
 
 	<div class="model-row cond-row">
@@ -1050,14 +1044,6 @@
 	.row-label {
 		font-size: 0.85rem;
 		color: var(--fg-dim);
-	}
-	.radio-label {
-		flex-direction: row;
-		align-items: center;
-		gap: 0.2rem;
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-		cursor: pointer;
 	}
 	.batch-input {
 		padding: 0.2rem 0.3rem;
