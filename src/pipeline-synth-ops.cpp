@@ -76,6 +76,7 @@ int ops_encode_src(AceSynth * ctx, const float * src_audio, int src_len, SynthSt
             return -1;
         }
         s.cover_latents.resize(s.T_cover * 64);
+        debug_dump_2d(&s.dbg, "cover_latents", s.cover_latents.data(), s.T_cover, 64);
         fprintf(stderr, "[Encode-Src] Encoded: T_cover=%d (%.2fs), %.1f ms\n", s.T_cover,
                 (float) s.T_cover * 1920.0f / 48000.0f, s.timer.ms());
 

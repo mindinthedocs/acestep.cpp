@@ -58,7 +58,9 @@ int ace_synth_generate(AceSynth *         ctx,
                        int                batch_n,
                        AceAudio *         out,
                        bool (*cancel)(void *) = nullptr,
-                       void * cancel_data     = nullptr);
+                       void *        cancel_data    = nullptr,
+                       const float * src_latents    = nullptr,
+                       int           src_latents_T  = 0);
 
 void ace_audio_free(AceAudio * audio);
 void ace_synth_free(AceSynth * ctx);

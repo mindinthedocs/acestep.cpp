@@ -29,12 +29,14 @@
 //   /understand LM + DiT + VAE
 
 #include "audio-io.h"
+#include "latents-io.h"
 #include "model-registry.h"
 #include "pipeline-lm.h"
 #include "pipeline-synth.h"
 #include "pipeline-understand.h"
 #include "request.h"
 #include "task-types.h"
+#include "vae-enc.h"
 #include "version.h"
 #include "yyjson.h"
 
@@ -736,6 +738,8 @@ static void synth_worker(std::shared_ptr<Job>    job,
                          int                     src_len,
                          float *                 ref_interleaved,
                          int                     ref_len,
+                         float *                 src_latents_data,
+                         int                     src_latents_T,
                          bool                    output_wav,
                          WavFormat               wav_fmt,
                          int                     peak_clip) {
@@ -756,6 +760,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     if (job->cancel.load()) {
         free(src_interleaved);
         free(ref_interleaved);
+        delete[] src_latents_data;
         job->status.store(3);
         return;
     }
@@ -765,6 +770,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     if (!ensure_synth(dit_name, sf.lora, sf.lora_scale)) {
         free(src_interleaved);
         free(ref_interleaved);
+        delete[] src_latents_data;
         job->status.store(2);
         return;
     }
@@ -792,7 +798,8 @@ static void synth_worker(std::shared_ptr<Job>    job,
 
         std::vector<AceAudio> group_audio(sbs);
         int rc = ace_synth_generate(g_ctx_synth, group.data(), src_interleaved, src_len, ref_interleaved, ref_len, sbs,
-                                    group_audio.data(), server_cancel_job, (void *) &job->cancel);
+                                    group_audio.data(), server_cancel_job, (void *) &job->cancel, src_latents_data,
+                                    src_latents_T);
 
         if (rc != 0) {
             if (!g_keep_loaded) {
@@ -803,6 +810,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
             }
             free(src_interleaved);
             free(ref_interleaved);
+            delete[] src_latents_data;
             for (int j = 0; j < audio_idx; j++) {
                 ace_audio_free(&audio[j]);
             }
@@ -827,6 +835,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     }
     free(src_interleaved);
     free(ref_interleaved);
+    delete[] src_latents_data;
     int total_tracks = audio_idx;
 
     // encode each track (peak normalize + encode)
@@ -899,10 +908,12 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
 
     // parse request: plain JSON (single or array) or multipart (JSON + audio file)
     std::vector<AceRequest> ace_reqs;
-    float *                 src_interleaved = nullptr;
-    int                     src_len         = 0;
-    float *                 ref_interleaved = nullptr;
-    int                     ref_len         = 0;
+    float *                 src_interleaved  = nullptr;
+    int                     src_len          = 0;
+    float *                 ref_interleaved  = nullptr;
+    int                     ref_len          = 0;
+    float *                 src_latents_data = nullptr;
+    int                     src_latents_T    = 0;
 
     if (req.is_multipart_form_data()) {
         // multipart mode: single request + optional audio files
@@ -923,15 +934,47 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
             return;
         }
 
+        if (req.form.has_file("src_latents")) {
+            auto file = req.form.get_file("src_latents");
+            if (file.content.empty()) {
+                json_error(res, 400, "Multipart: empty 'src_latents' part");
+                return;
+            }
+            if (req.form.has_file("audio")) {
+                json_error(res, 400, "Multipart: 'audio' and 'src_latents' are mutually exclusive");
+                return;
+            }
+            if (ace_req.task_type != TASK_COVER_NOFSQ) {
+                json_error(res, 400, "src_latents requires task_type=cover-nofsq");
+                return;
+            }
+            std::vector<float> parsed;
+            int                T_parsed = 0;
+            if (!latents_parse((const uint8_t *) file.content.data(), file.content.size(), parsed, T_parsed)) {
+                json_error(res, 400, "Invalid latents file (expected ndims=2, channels=64 header)");
+                return;
+            }
+            if (T_parsed > 15000) {
+                json_error(res, 400, "src_latents T exceeds 15000 frames");
+                return;
+            }
+            src_latents_data = new float[(size_t) T_parsed * 64];
+            std::memcpy(src_latents_data, parsed.data(), (size_t) T_parsed * 64 * sizeof(float));
+            src_latents_T = T_parsed;
+            fprintf(stderr, "[Server] Imported latents: T=%d (%.2fs @ 25Hz)\n", T_parsed, (float) T_parsed / 25.0f);
+        }
+
         if (req.form.has_file("audio")) {
             auto file = req.form.get_file("audio");
             if (file.content.empty()) {
+                delete[] src_latents_data;
                 json_error(res, 400, "Multipart: empty 'audio' part");
                 return;
             }
             int     T_audio = 0;
             float * planar  = audio_read_48k_buf((const uint8_t *) file.content.data(), file.content.size(), &T_audio);
             if (!planar || T_audio <= 0) {
+                delete[] src_latents_data;
                 json_error(res, 400, "Failed to decode audio");
                 return;
             }
@@ -968,11 +1011,13 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
     }
 
     if (ace_reqs.empty()) {
+        delete[] src_latents_data;
         json_error(res, 400, "Empty request");
         return;
     }
     if (ace_reqs[0].caption.empty() && ace_reqs[0].task_type != TASK_LEGO && ace_reqs[0].task_type != TASK_EXTRACT &&
         ace_reqs[0].task_type != TASK_COMPLETE) {
+        delete[] src_latents_data;
         json_error(res, 400, "Caption is required");
         return;
     }
@@ -992,13 +1037,87 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
     auto job = job_create();
     fprintf(stderr, "[Server] Job %s created (%d requests)\n", job->id.c_str(), (int) ace_reqs.size());
 
-    work_push([job, reqs = std::move(ace_reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav,
-               wav_fmt, peak_clip]() mutable {
-        synth_worker(job, std::move(reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, output_wav, wav_fmt,
-                     peak_clip);
+    work_push([job, reqs = std::move(ace_reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len,
+               src_latents_data, src_latents_T, output_wav, wav_fmt, peak_clip]() mutable {
+        synth_worker(job, std::move(reqs), sf, src_interleaved, src_len, ref_interleaved, ref_len, src_latents_data,
+                     src_latents_T, output_wav, wav_fmt, peak_clip);
     });
 
     // return job ID immediately
+    std::string body = "{\"id\":\"" + job->id + "\"}";
+    res.set_content(body, "application/json");
+}
+
+// latents worker: load VAE encoder only (no DiT, no text-encoder), encode,
+// serialize as pre-FSQ tensor, store binary result in job.
+static void latents_worker(std::shared_ptr<Job> job, float * src_interleaved, int src_len) {
+    if (job->cancel.load()) {
+        free(src_interleaved);
+        job->status.store(3);
+        return;
+    }
+
+    VAEEncoder enc = {};
+    vae_enc_load(&enc, g_registry.vae[0].path.c_str());
+
+    // worst-case T_latent = ceil(src_len / 1920). Over-size to stay safe with tile padding.
+    int max_T = (src_len / 1920) + 16;
+    std::vector<float> latent(static_cast<size_t>(max_T) * 64);
+    int T_latent = vae_enc_encode_tiled(&enc, src_interleaved, src_len, latent.data(), max_T,
+                                        g_synth_params.vae_chunk, g_synth_params.vae_overlap);
+    vae_enc_free(&enc);
+    free(src_interleaved);
+
+    if (T_latent < 0) {
+        job->result_body = "{\"error\":\"VAE encode failed\"}";
+        job->result_mime = "application/json";
+        job->status.store(2);
+        return;
+    }
+
+    latents_serialize(latent.data(), T_latent, job->result_body);
+    job->result_mime = "application/octet-stream";
+    job->status.store(job->cancel.load() ? 3 : 1);
+    fprintf(stderr, "[Server] Job %s done (latents T=%d)\n", job->id.c_str(), T_latent);
+}
+
+// POST /latents
+// multipart body with "audio" part (WAV/MP3). Returns JSON {"id":"N"} immediately.
+// GET /job?id=N&result=1 returns the 12-byte header + float32 payload
+// (application/octet-stream) matching DebugDumper::debug_dump_2d layout.
+static void handle_latents(const httplib::Request & req, httplib::Response & res) {
+    if (g_registry.vae.empty()) {
+        json_error(res, 501, "No VAE model in registry");
+        return;
+    }
+    if (!req.is_multipart_form_data()) {
+        json_error(res, 400, "Expected multipart/form-data");
+        return;
+    }
+    if (!req.form.has_file("audio")) {
+        json_error(res, 400, "Multipart: missing 'audio' part");
+        return;
+    }
+    auto file = req.form.get_file("audio");
+    if (file.content.empty()) {
+        json_error(res, 400, "Multipart: empty 'audio' part");
+        return;
+    }
+    int     T_audio = 0;
+    float * planar  = audio_read_48k_buf((const uint8_t *) file.content.data(), file.content.size(), &T_audio);
+    if (!planar || T_audio <= 0) {
+        json_error(res, 400, "Failed to decode audio");
+        return;
+    }
+    fprintf(stderr, "[Server] Latents source: %.2fs @ 48kHz\n", (float) T_audio / 48000.0f);
+    float * src_interleaved = audio_planar_to_interleaved(planar, T_audio);
+    free(planar);
+
+    auto job = job_create();
+    fprintf(stderr, "[Server] Job %s created (latents)\n", job->id.c_str());
+
+    work_push([job, src_interleaved, T_audio]() { latents_worker(job, src_interleaved, T_audio); });
+
     std::string body = "{\"id\":\"" + job->id + "\"}";
     res.set_content(body, "application/json");
 }
@@ -1242,7 +1361,8 @@ static void usage(const char * prog) {
             "  --no-fsm                Disable FSM constrained decoding\n"
             "  --no-fa                 Disable flash attention\n"
             "  --no-batch-cfg          Split CFG into two separate forwards (LM + DiT)\n"
-            "  --clamp-fp16            Clamp hidden states to FP16 range\n",
+            "  --clamp-fp16            Clamp hidden states to FP16 range\n"
+            "  --dump <dir>            Dump intermediate tensors (for parity checks)\n",
             prog);
 }
 
@@ -1300,6 +1420,11 @@ int main(int argc, char ** argv) {
         } else if (!strcmp(argv[i], "--clamp-fp16")) {
             g_lm_params.clamp_fp16    = true;
             g_synth_params.clamp_fp16 = true;
+        } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
+            // function-static holds the backing for dump_dir's const char*
+            static std::string dump_dir_buf;
+            dump_dir_buf             = argv[++i];
+            g_synth_params.dump_dir  = dump_dir_buf.c_str();
 
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage(argv[0]);
@@ -1408,6 +1533,7 @@ int main(int argc, char ** argv) {
     // backing pipeline has no models in the registry.
     svr.Post("/lm", handle_lm);
     svr.Post("/synth", handle_synth);
+    svr.Post("/latents", handle_latents);
     svr.Post("/understand", handle_understand);
     svr.Get("/health", [](const httplib::Request &, httplib::Response & res) {
         res.set_content("{\"status\":\"ok\"}", "application/json");

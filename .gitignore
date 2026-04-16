@@ -1,6 +1,8 @@
 build/
 *.wav
 *.bf16
+.cache/
+.DS_Store
 
 tests/*/
 

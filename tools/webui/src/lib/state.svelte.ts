@@ -55,6 +55,7 @@ export const app = $state({
 	pendingIndex: 0,
 	refSongId: null as number | null,
 	srcSongId: null as number | null,
+	importedLatents: null as File | null,
 	srcRangeStart: null as number | null,
 	srcRangeEnd: null as number | null
 });

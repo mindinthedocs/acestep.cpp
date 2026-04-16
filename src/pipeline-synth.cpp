@@ -215,7 +215,9 @@ int ace_synth_generate(AceSynth *         ctx,
                        int                batch_n,
                        AceAudio *         out,
                        bool (*cancel)(void *),
-                       void * cancel_data) {
+                       void *        cancel_data,
+                       const float * src_latents,
+                       int           src_latents_T) {
     if (!ctx || !reqs || !out || batch_n < 1 || batch_n > 9) {
         return -1;
     }
@@ -262,8 +264,18 @@ int ace_synth_generate(AceSynth *         ctx,
         }
     }
 
-    // VAE encode source audio (possibly padded for outpainting)
-    if (ops_encode_src(ctx, enc_audio, enc_len, s) != 0) {
+    // VAE encode source audio (possibly padded for outpainting), or adopt
+    // caller-supplied pre-FSQ latents directly for cover-nofsq import.
+    if (src_latents && src_latents_T > 0) {
+        if (reqs[0].task_type != "cover-nofsq") {
+            fprintf(stderr, "[Generate] ERROR: src_latents requires task_type=cover-nofsq\n");
+            return -1;
+        }
+        s.cover_latents.assign(src_latents, src_latents + (size_t) src_latents_T * 64);
+        s.T_cover    = src_latents_T;
+        s.have_cover = true;
+        debug_dump_2d(&s.dbg, "cover_latents", s.cover_latents.data(), s.T_cover, 64);
+    } else if (ops_encode_src(ctx, enc_audio, enc_len, s) != 0) {
         return -1;
     }
 
