@@ -9,6 +9,7 @@
 		lmSubmitFormat,
 		synthSubmit,
 		synthSubmitWithAudio,
+		synthSubmitWithLatents,
 		pollJob,
 		jobResultJson,
 		jobResultBlobs,
@@ -37,6 +38,8 @@
 	let busySynth = $state(false);
 	let busy = $derived(busyLm || busySynth);
 	let fileInput: HTMLInputElement;
+	let latentsInput: HTMLInputElement;
+	let hasLatents = $derived(app.importedLatents != null);
 
 	let d = $derived(app.props?.default);
 	let ditModels = $derived(app.props?.models.dit ?? []);
@@ -253,6 +256,14 @@
 		toast('Unsupported file type: ' + ext);
 	}
 
+	function onLatentsSelected(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		input.value = '';
+		app.importedLatents = file;
+	}
+
 	// open audio file: create song card with audio only (no server call).
 	// use Scan on the card to analyze metadata.
 	async function openAudio(file: File, ext: string) {
@@ -399,15 +410,23 @@
 			const baseName = app.name || 'Untitled';
 
 			// submit job, poll until done, fetch result
-			const jobId =
-				srcSong || refSong
-					? await synthSubmitWithAudio(
-							toSend,
-							srcSong?.audio ?? null,
-							refSong?.audio ?? null,
-							app.format
-						)
-					: await synthSubmit(toSend, app.format);
+			let jobId: string;
+			if (hasLatents) {
+				if (taskType !== TASK_COVER_NOFSQ) {
+					toast('Import latents requires task cover-nofsq');
+					return;
+				}
+				jobId = await synthSubmitWithLatents(toSend, app.importedLatents!, app.format);
+			} else if (srcSong || refSong) {
+				jobId = await synthSubmitWithAudio(
+					toSend,
+					srcSong?.audio ?? null,
+					refSong?.audio ?? null,
+					app.format
+				);
+			} else {
+				jobId = await synthSubmit(toSend, app.format);
+			}
 			saveJob('synth', {
 				id: jobId,
 				name: baseName,
@@ -750,6 +769,22 @@
 					<option value={TASK_COMPLETE}>complete</option>
 				</select>
 			</div>
+			<div class="model-row">
+				<span class="model-label">Latents</span>
+				<input
+					type="file"
+					accept=".latents"
+					bind:this={latentsInput}
+					onchange={onLatentsSelected}
+					hidden
+				/>
+				<button type="button" onclick={() => latentsInput.click()}>
+					Import latents{hasLatents ? ' ✓' : ''}
+				</button>
+				{#if hasLatents}
+					<button type="button" onclick={() => (app.importedLatents = null)}>Clear</button>
+				{/if}
+			</div>
 			<div class="model-row track-row">
 				<span class="model-label">Track</span>
 				<div class="track-grid">
@@ -900,6 +935,7 @@
 			<span class="dit-ind" class:on={hasSrc}>Src audio</span>
 			<span class="dit-ind" class:on={hasRange}>Range</span>
 			<span class="dit-ind" class:on={hasRef}>Timbre ref</span>
+			<span class="dit-ind" class:on={hasLatents}>Latents</span>
 		</div>
 	</div>
 

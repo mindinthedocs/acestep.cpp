@@ -270,7 +270,9 @@ AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
                                     int                ref_len,
                                     int                batch_n,
                                     bool (*cancel)(void *),
-                                    void * cancel_data) {
+                                    void *        cancel_data,
+                                    const float * src_latents,
+                                    int           src_latents_T) {
     if (!ctx || !reqs || batch_n < 1 || batch_n > 9) {
         return NULL;
     }
@@ -320,10 +322,24 @@ AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
         }
     }
 
-    // VAE encode source audio (possibly padded for outpainting).
-    // ops_encode_src loads a local VAE encoder, encodes, and frees it:
-    // no VAE encoder stays resident while the DiT runs.
-    if (ops_encode_src(ctx, enc_audio, enc_len, s) != 0) {
+    // Pre-encoded latent import bypasses VAE encode + FSQ for cover-nofsq.
+    // When src_latents is provided, the caller has already produced 25Hz x 64-ch
+    // cover latents; adopt them directly so the DiT sees byte-identical input
+    // to what the VAE-encode + --dump path would have written.
+    if (src_latents && src_latents_T > 0) {
+        if (reqs[0].task_type != TASK_COVER_NOFSQ) {
+            fprintf(stderr, "[Synth-Phase] FATAL: src_latents requires task_type=cover-nofsq\n");
+            delete job;
+            return NULL;
+        }
+        s.cover_latents.assign(src_latents, src_latents + (size_t) src_latents_T * 64);
+        s.T_cover    = src_latents_T;
+        s.have_cover = true;
+        debug_dump_2d(&s.dbg, "cover_latents", s.cover_latents.data(), s.T_cover, 64);
+    } else if (ops_encode_src(ctx, enc_audio, enc_len, s) != 0) {
+        // VAE encode source audio (possibly padded for outpainting).
+        // ops_encode_src loads a local VAE encoder, encodes, and frees it:
+        // no VAE encoder stays resident while the DiT runs.
         delete job;
         return NULL;
     }

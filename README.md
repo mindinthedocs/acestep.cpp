@@ -88,20 +88,26 @@ Supports LoRA today in two flavours: PEFT directories (with
 --max-batch <N>      LM batch limit 1-9 (default: 1)
 --vae-chunk <N>      VAE tile size (default: 256, lower = less VRAM)
 --mp3-bitrate <N>    MP3 kbps (default: 128)
+--dump <dir>         Write debug tensors (noise, context, cover_latents, ...) to dir
 ```
 
 <details>
 <summary>API endpoints</summary>
 
-The server exposes three POST endpoints and two GET endpoints:
+The server exposes four POST endpoints and two GET endpoints:
 
 **POST /lm** - Generate lyrics and audio codes from a caption. Returns JSON.
 
 **POST /synth** - Render audio codes into MP3 or WAV (`?wav=1`).
-Accepts JSON or multipart (with source audio for cover/repaint modes).
+Accepts JSON or multipart (with source audio for cover/repaint modes, or
+with a `src_latents` field for `cover-nofsq` to bypass the VAE encoder).
 
 **POST /understand** - Reverse pipeline: audio in, metadata + lyrics + codes out.
 Accepts multipart (audio file) or JSON (codes-only).
+
+**POST /latents** - Encode audio into the pre-FSQ 25Hz × 64-ch float32 latent
+tensor (VAE encoder only, no DiT load). Returns binary tensor via
+`GET /job?id=X&result=1` with mime `application/octet-stream`.
 
 **GET /health** - Returns `{"status":"ok"}`.
 

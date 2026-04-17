@@ -35,8 +35,10 @@ static int synth_batch_run(AceSynth *                             ctx,
                            const float *                          ref_audio,
                            int                                    ref_len,
                            AceAudio *                             audio_out,
-                           bool (*cancel)(void *) = nullptr,
-                           void * cancel_data     = nullptr) {
+                           bool (*cancel)(void *)  = nullptr,
+                           void *        cancel_data     = nullptr,
+                           const float * src_latents     = nullptr,
+                           int           src_latents_T   = 0) {
     const int                  n_groups = (int) groups.size();
     std::vector<AceSynthJob *> jobs(n_groups, nullptr);
     std::vector<int>           audio_off(n_groups, 0);
@@ -48,7 +50,7 @@ static int synth_batch_run(AceSynth *                             ctx,
     for (int g = 0; g < n_groups; g++) {
         const int gn = (int) groups[g].size();
         jobs[g]      = ace_synth_job_run_dit(ctx, groups[g].data(), src_audio, src_len, ref_audio, ref_len, gn, cancel,
-                                             cancel_data);
+                                             cancel_data, src_latents, src_latents_T);
         if (!jobs[g]) {
             for (int j = 0; j < g; j++) {
                 ace_synth_job_free(jobs[j]);

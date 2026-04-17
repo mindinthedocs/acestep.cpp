@@ -67,6 +67,8 @@ export default defineConfig({
 			'/lm': 'http://localhost:8080',
 			'/synth': 'http://localhost:8080',
 			'/understand': 'http://localhost:8080',
+			'/latents': 'http://localhost:8080',
+			'/job': 'http://localhost:8080',
 			'/health': 'http://localhost:8080',
 			'/props': 'http://localhost:8080',
 			'/logs': 'http://localhost:8080'

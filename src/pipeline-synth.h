@@ -71,6 +71,9 @@ void ace_synth_vae_unload(AceSynth * ctx);
 //   seed must be resolved (non-negative) before calling this function.
 // src_audio / ref_audio: interleaved stereo 48kHz buffers, NULL when not applicable.
 // batch_n: number of requests (1..9).
+// src_latents / src_latents_T: optional pre-encoded 25Hz x 64-ch cover latents
+//   (T*64 f32). When non-null, bypasses VAE encode + FSQ; requires
+//   task_type=cover-nofsq. Caller retains ownership.
 // cancel/cancel_data: abort callback, polled between DiT steps. NULL = never cancel.
 // Returns NULL on error or cancellation.
 AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
@@ -80,8 +83,10 @@ AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
                                     const float *      ref_audio,
                                     int                ref_len,
                                     int                batch_n,
-                                    bool (*cancel)(void *) = nullptr,
-                                    void * cancel_data     = nullptr);
+                                    bool (*cancel)(void *)  = nullptr,
+                                    void *        cancel_data     = nullptr,
+                                    const float * src_latents     = nullptr,
+                                    int           src_latents_T   = 0);
 
 // Phase 2: VAE decode and waveform splice.
 // ops_vae_decode_and_splice lazy-loads the decoder on first use and leaves

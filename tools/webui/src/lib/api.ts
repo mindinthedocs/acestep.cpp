@@ -188,6 +188,34 @@ export function understandSubmit(
 	return submitJob('understand', { method: 'POST', body: form });
 }
 
+// POST /latents (multipart): encode audio via VAE, returns job ID
+export function latentsSubmit(audio: Blob): Promise<string> {
+	const form = new FormData();
+	form.append('audio', audio, 'input.audio');
+	return submitJob('latents', { method: 'POST', body: form });
+}
+
+// GET /job?id=X&result=1: fetch latent result as a single binary Blob
+export async function latentsFetchResult(id: string): Promise<Blob> {
+	const res = await fetch(`job?id=${encodeURIComponent(id)}&result=1`);
+	if (!res.ok) throw new Error(`${res.status} Result not ready`);
+	return new Blob([await res.arrayBuffer()], { type: 'application/octet-stream' });
+}
+
+// POST /synth (multipart): submit synth request with pre-encoded latents, returns job ID
+export function synthSubmitWithLatents(
+	reqs: AceRequest[],
+	latents: Blob,
+	format: string
+): Promise<string> {
+	const url = format !== 'mp3' ? `synth?format=${format}` : 'synth';
+	const body = reqs.length === 1 ? JSON.stringify(reqs[0]) : JSON.stringify(reqs);
+	const form = new FormData();
+	form.append('request', new Blob([body], { type: 'application/json' }), 'request.json');
+	form.append('src_latents', latents, 'latents.bin');
+	return submitJob(url, { method: 'POST', body: form });
+}
+
 // GET /props: server config (2s timeout)
 export async function props(): Promise<AceProps> {
 	const res = await fetch('props', {
